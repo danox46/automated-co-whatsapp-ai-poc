@@ -59,6 +59,7 @@ INVENTORY_PROVIDER=mock_grocery
 AGENT_DECISION_MODE=deterministic
 AGENT_LOCAL_CLI_COMMAND=npm run -s agent:codex
 AGENT_LOCAL_CLI_TIMEOUT_MS=120000
+AGENT_PROMPT_PATH=prompts/local-codex-agent.md
 CODEX_CLI_PATH=
 ```
 
@@ -103,6 +104,8 @@ Local Codex agent command:
 ```bash
 npm run agent:codex
 ```
+
+Tune local Codex response behavior in [prompts/local-codex-agent.md](./prompts/local-codex-agent.md). That prompt contains the read-only rules, disclosure policy, human handoff rules, and response style guidance.
 
 ## Local Twilio Tunnel
 

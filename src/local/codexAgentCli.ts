@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import type { AgentDecisionRequest } from "../agent/decisionTypes.js";
 
 const workspaceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const schemaPath = join(workspaceRoot, "schemas", "agent-decision.schema.json");
+const defaultPromptPath = join(workspaceRoot, "prompts", "local-codex-agent.md");
 
 const request = (await readStdinJson()) as AgentDecisionRequest;
 const tempDir = await mkdtemp(join(tmpdir(), "whatsapp-codex-agent-"));
@@ -53,17 +55,15 @@ function resolveCodexCliPath() {
 }
 
 function buildPrompt(request: AgentDecisionRequest) {
-  return `You are the read-only WhatsApp inventory advisor for Automated & Co.
+  const promptPath = process.env.AGENT_PROMPT_PATH
+    ? resolve(workspaceRoot, process.env.AGENT_PROMPT_PATH)
+    : defaultPromptPath;
+  const basePrompt = readFileSync(promptPath, "utf8");
 
-Use only the provided catalog, inventoryMatches, and deliveryGuidance.
-Do not invent products, prices, stock, URLs, orders, or delivery promises.
-Decide whether to respond or route_to_human.
-Return only valid JSON matching the AgentDecision schema.
-Prefer a useful grounded attempt when a known product is detected.
-Route to human when the request is outside inventory/delivery guidance or cannot be answered from the provided data.
-Keep the WhatsApp response short and natural in the user's language.
+  return `${basePrompt}
 
-Decision request JSON:
+## Decision Request JSON
+
 ${JSON.stringify(request, null, 2)}`;
 }
 

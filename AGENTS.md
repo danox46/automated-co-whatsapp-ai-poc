@@ -50,6 +50,7 @@ Use `.env.example` as the template. Never commit `.env`.
 - `src/agent/orchestrator.ts`: request orchestration and attempt-first intent resolution
 - `src/agent/decisionTypes.ts`: local agent decision contract
 - `src/agent/localCliDecisionProvider.ts`: JSON stdin/stdout bridge for local Codex-style commands
+- `prompts/local-codex-agent.md`: runtime prompt for the local Codex decision agent
 - `src/inventory/InventoryProvider.ts`: read-only provider contract
 - `src/inventory/providers/mockInventoryProvider.ts`: current mock grocery catalog and alternatives
 - `src/messages/extractFields.ts`: product, package size, quantity, and city extraction

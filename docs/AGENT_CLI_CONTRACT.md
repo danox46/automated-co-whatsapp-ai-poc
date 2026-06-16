@@ -28,9 +28,12 @@ To route through the installed local Codex CLI:
 AGENT_DECISION_MODE=local_cli
 AGENT_LOCAL_CLI_COMMAND=npm run -s agent:codex
 AGENT_LOCAL_CLI_TIMEOUT_MS=120000
+AGENT_PROMPT_PATH=prompts/local-codex-agent.md
 ```
 
 If the bundled Codex binary is not auto-detected, set `CODEX_CLI_PATH` to the absolute `codex.exe` path.
+
+Tune behavior in `prompts/local-codex-agent.md`. Keep that prompt focused on response policy, grounding, disclosure, and handoff behavior.
 
 ## Input
 
