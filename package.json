@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "verify": "npm run typecheck && npm test && npm run build",
     "agent:mock": "tsx src/local/mockAgentCli.ts",
+    "agent:codex": "tsx src/local/codexAgentCli.ts",
     "demo": "tsx src/local/demo.ts"
   },
   "dependencies": {

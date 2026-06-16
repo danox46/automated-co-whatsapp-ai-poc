@@ -57,8 +57,9 @@ LOG_LEVEL=debug
 TWILIO_WEBHOOK_PUBLIC_URL=
 INVENTORY_PROVIDER=mock_grocery
 AGENT_DECISION_MODE=deterministic
-AGENT_LOCAL_CLI_COMMAND=
-AGENT_LOCAL_CLI_TIMEOUT_MS=30000
+AGENT_LOCAL_CLI_COMMAND=npm run -s agent:codex
+AGENT_LOCAL_CLI_TIMEOUT_MS=120000
+CODEX_CLI_PATH=
 ```
 
 Check runtime env:
@@ -95,6 +96,12 @@ Mock local agent command:
 
 ```bash
 npm run agent:mock
+```
+
+Local Codex agent command:
+
+```bash
+npm run agent:codex
 ```
 
 ## Local Twilio Tunnel
@@ -157,6 +164,7 @@ npm run build      Clean and compile to dist
 npm run verify     Typecheck, test, and build
 npm run check:env  Validate required Twilio env vars
 npm run agent:mock Mock local agent CLI contract implementation
+npm run agent:codex Local Codex CLI agent bridge
 ```
 
 ## Architecture

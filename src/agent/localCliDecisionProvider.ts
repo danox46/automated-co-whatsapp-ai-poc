@@ -4,8 +4,16 @@ import type { AgentDecision, AgentDecisionProvider, AgentDecisionRequest } from 
 
 const agentDecisionSchema = z.object({
   action: z.enum(["respond", "route_to_human"]),
-  responseText: z.string().optional(),
-  routeReason: z.string().optional(),
+  responseText: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? undefined),
+  routeReason: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? undefined),
   confidence: z.number().min(0).max(1).default(0.5),
   understanding: z.object({
     intent: z.enum(["check_availability", "delivery_guidance", "unclear"]),

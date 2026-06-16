@@ -30,6 +30,7 @@ npm run demo
 npm run dev
 npm run tunnel
 npm run agent:mock
+npm run agent:codex
 ```
 
 `npm run verify` is the main pre-handoff gate. It runs typecheck, tests, and build.

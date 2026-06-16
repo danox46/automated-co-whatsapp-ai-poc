@@ -12,7 +12,7 @@ The app remains read-only. The local agent receives a grounded inventory snapsho
 ```text
 AGENT_DECISION_MODE=local_cli
 AGENT_LOCAL_CLI_COMMAND=<your command>
-AGENT_LOCAL_CLI_TIMEOUT_MS=30000
+AGENT_LOCAL_CLI_TIMEOUT_MS=120000
 ```
 
 For local contract testing:
@@ -21,6 +21,16 @@ For local contract testing:
 AGENT_DECISION_MODE=local_cli
 AGENT_LOCAL_CLI_COMMAND=npm run -s agent:mock
 ```
+
+To route through the installed local Codex CLI:
+
+```text
+AGENT_DECISION_MODE=local_cli
+AGENT_LOCAL_CLI_COMMAND=npm run -s agent:codex
+AGENT_LOCAL_CLI_TIMEOUT_MS=120000
+```
+
+If the bundled Codex binary is not auto-detected, set `CODEX_CLI_PATH` to the absolute `codex.exe` path.
 
 ## Input
 

@@ -1,0 +1,46 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "responseText", "routeReason", "confidence", "understanding", "notes"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["respond", "route_to_human"]
+    },
+    "responseText": {
+      "type": ["string", "null"]
+    },
+    "routeReason": {
+      "type": ["string", "null"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "understanding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "resolvedIntent", "needsHuman"],
+      "properties": {
+        "intent": {
+          "type": "string",
+          "enum": ["check_availability", "delivery_guidance", "unclear"]
+        },
+        "resolvedIntent": {
+          "type": "string",
+          "enum": ["check_availability", "delivery_guidance", "unclear", "catalog_options"]
+        },
+        "needsHuman": {
+          "type": "boolean"
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

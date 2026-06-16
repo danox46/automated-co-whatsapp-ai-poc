@@ -59,6 +59,10 @@ export function validateRuntimeConfig(config: AppConfig) {
     missing.push("TWILIO_WHATSAPP_FROM");
   }
 
+  if (config.agent.mode === "local_cli" && !config.agent.command) {
+    missing.push("AGENT_LOCAL_CLI_COMMAND");
+  }
+
   return {
     ok: missing.length === 0,
     missing
