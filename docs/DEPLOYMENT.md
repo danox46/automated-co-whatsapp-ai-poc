@@ -22,6 +22,16 @@ npm run build
 npm start
 ```
 
+For local-Codex decision mode, also set:
+
+```text
+AGENT_DECISION_MODE=local_cli
+AGENT_LOCAL_CLI_COMMAND=<command that reads JSON stdin and prints AgentDecision JSON>
+AGENT_LOCAL_CLI_TIMEOUT_MS=30000
+```
+
+Use `AGENT_DECISION_MODE=deterministic` when the local Codex command is not available.
+
 ## Health Check
 
 ```text

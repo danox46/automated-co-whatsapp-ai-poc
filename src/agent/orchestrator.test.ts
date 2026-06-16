@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { orchestrateInboundMessage } from "./orchestrator.js";
 import type { InboundMessage } from "../messages/types.js";
+import { MockInventoryProvider } from "../inventory/providers/mockInventoryProvider.js";
+import { LocalCliDecisionProvider } from "./localCliDecisionProvider.js";
 
 describe("orchestrateInboundMessage", () => {
   it("runs the mocked grocery availability pipeline and returns a trace", async () => {
@@ -53,13 +55,24 @@ describe("orchestrateInboundMessage", () => {
     expect(result.responseText).toContain("Como alternativa");
   });
 
-  it("still asks a broad follow-up when no product or delivery signal is detected", async () => {
-    const result = await orchestrateInboundMessage(message("Hola"));
+  it("answers catalog option questions from grounded inventory data", async () => {
+    const result = await orchestrateInboundMessage(message("Que tamanos de arroz ofrecen?"));
 
     expect(result.shouldSend).toBe(true);
+    expect(result.routeToHuman).toBe(false);
+    expect(result.trace.agentDecision.understanding.resolvedIntent).toBe("catalog_options");
+    expect(result.responseText).toContain("bolsa 5kg");
+    expect(result.responseText).toContain("bolsa 1kg");
+  });
+
+  it("routes to human when no product or delivery signal is detected", async () => {
+    const result = await orchestrateInboundMessage(message("Hola"));
+
+    expect(result.shouldSend).toBe(false);
+    expect(result.routeToHuman).toBe(true);
     expect(result.trace.intent).toBe("unclear");
     expect(result.trace.resolvedIntent).toBe("unclear");
-    expect(result.responseText).toContain("disponibilidad");
+    expect(result.trace.agentDecision.routeReason).toContain("No recognizable product");
   });
 
   it("runs the mocked delivery pipeline and returns an estimate caveat", async () => {
@@ -71,6 +84,19 @@ describe("orchestrateInboundMessage", () => {
     expect(result.responseText).toContain("estimacion");
   });
 
+  it("can use the local CLI decision provider contract", async () => {
+    const result = await orchestrateInboundMessage(message("Que tamanos de arroz ofrecen?"), {
+      inventoryProvider: new MockInventoryProvider(),
+      decisionProvider: new LocalCliDecisionProvider({
+        command: "npm run -s agent:mock",
+        timeoutMs: 30000
+      })
+    });
+
+    expect(result.shouldSend).toBe(true);
+    expect(result.trace.agentDecision.understanding.resolvedIntent).toBe("catalog_options");
+    expect(result.responseText).toContain("bolsa 5kg");
+  });
 });
 
 function message(body: string): InboundMessage {

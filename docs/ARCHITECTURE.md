@@ -11,7 +11,7 @@ Twilio WhatsApp webhook
   -> extractFields
   -> resolveIntent
   -> InventoryProvider or delivery guidance
-  -> composeResponse
+  -> AgentDecisionProvider
   -> applyResponseGuardrails
   -> Twilio send service
 ```
@@ -27,6 +27,17 @@ Rules:
 - Unknown product and no delivery signal resolves to `unclear`.
 
 This avoids the common WhatsApp bot failure where the user has to repeat a product query after a generic clarification prompt.
+
+## Agent Decision Layer
+
+`AgentDecisionProvider` is the boundary for the local Codex-style decision engine.
+
+Current modes:
+
+- `deterministic`: in-process grounded fallback used for tests and local development.
+- `local_cli`: sends the full decision request to `AGENT_LOCAL_CLI_COMMAND` over stdin and expects one JSON decision on stdout.
+
+The CLI contract is documented in `docs/AGENT_CLI_CONTRACT.md`.
 
 ## Inventory Provider Contract
 

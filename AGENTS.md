@@ -29,6 +29,7 @@ npm run verify
 npm run demo
 npm run dev
 npm run tunnel
+npm run agent:mock
 ```
 
 `npm run verify` is the main pre-handoff gate. It runs typecheck, tests, and build.
@@ -46,6 +47,8 @@ Use `.env.example` as the template. Never commit `.env`.
 ## Main Files
 
 - `src/agent/orchestrator.ts`: request orchestration and attempt-first intent resolution
+- `src/agent/decisionTypes.ts`: local agent decision contract
+- `src/agent/localCliDecisionProvider.ts`: JSON stdin/stdout bridge for local Codex-style commands
 - `src/inventory/InventoryProvider.ts`: read-only provider contract
 - `src/inventory/providers/mockInventoryProvider.ts`: current mock grocery catalog and alternatives
 - `src/messages/extractFields.ts`: product, package size, quantity, and city extraction
@@ -55,6 +58,7 @@ Use `.env.example` as the template. Never commit `.env`.
 - `public/mock-inventory.html`: static mock inventory viewer
 - `docs/ARCHITECTURE.md`: architecture notes
 - `docs/DEPLOYMENT.md`: deployment handoff
+- `docs/AGENT_CLI_CONTRACT.md`: command contract for external/local agents
 
 ## Testing Expectations
 

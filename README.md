@@ -12,6 +12,7 @@ The current business loop uses mocked grocery inventory so the response behavior
 - Extracts product, package size, quantity, and city signals
 - Looks up a mocked grocery inventory provider
 - Leans toward attempting a helpful inventory answer when a known product is detected
+- Can delegate final response decisions to a local CLI/Codex agent command
 - Recommends real mock alternatives, such as replacing unavailable large mayo with medium jars
 - Adds limited upsell suggestions only after the first query is answered
 - Sends a WhatsApp response through Twilio's REST API
@@ -55,6 +56,9 @@ PORT=3000
 LOG_LEVEL=debug
 TWILIO_WEBHOOK_PUBLIC_URL=
 INVENTORY_PROVIDER=mock_grocery
+AGENT_DECISION_MODE=deterministic
+AGENT_LOCAL_CLI_COMMAND=
+AGENT_LOCAL_CLI_TIMEOUT_MS=30000
 ```
 
 Check runtime env:
@@ -81,6 +85,16 @@ Local demo without WhatsApp:
 
 ```bash
 npm run demo
+```
+
+Local agent CLI contract docs:
+
+[docs/AGENT_CLI_CONTRACT.md](./docs/AGENT_CLI_CONTRACT.md)
+
+Mock local agent command:
+
+```bash
+npm run agent:mock
 ```
 
 ## Local Twilio Tunnel
@@ -142,6 +156,7 @@ npm run typecheck  Run TypeScript checks
 npm run build      Clean and compile to dist
 npm run verify     Typecheck, test, and build
 npm run check:env  Validate required Twilio env vars
+npm run agent:mock Mock local agent CLI contract implementation
 ```
 
 ## Architecture

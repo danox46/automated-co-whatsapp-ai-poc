@@ -1,11 +1,16 @@
 import type { Request, Response } from "express";
 import type { AppConfig } from "../config/env.js";
+import { createDecisionProvider } from "../agent/createDecisionProvider.js";
 import { normalizeInboundMessage } from "../messages/normalizeInboundMessage.js";
 import { logger } from "../logging/logger.js";
 import { orchestrateInboundMessage } from "../agent/orchestrator.js";
+import { createInventoryProvider } from "../inventory/createInventoryProvider.js";
 import { sendWhatsappMessage } from "./sendService.js";
 
 export function createTwilioWhatsappWebhookHandler(config: AppConfig) {
+  const inventoryProvider = createInventoryProvider(config);
+  const decisionProvider = createDecisionProvider(config);
+
   return async function handleTwilioWhatsappWebhook(req: Request, res: Response) {
     const inboundMessage = normalizeInboundMessage(req.body);
 
@@ -16,11 +21,21 @@ export function createTwilioWhatsappWebhookHandler(config: AppConfig) {
     });
 
     try {
-      const result = await orchestrateInboundMessage(inboundMessage);
+      const result = await orchestrateInboundMessage(inboundMessage, {
+        inventoryProvider,
+        decisionProvider
+      });
 
       logger.info("Processed inbound WhatsApp message", {
         trace: result.trace
       });
+
+      if (result.routeToHuman) {
+        logger.warn("Agent routed inbound WhatsApp message to human", {
+          inboundMessageId: inboundMessage.providerMessageId,
+          routeReason: result.trace.agentDecision.routeReason
+        });
+      }
 
       if (result.shouldSend && inboundMessage.from) {
         const sendResult = await sendWhatsappMessage(config.twilio, {

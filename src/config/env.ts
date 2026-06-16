@@ -9,6 +9,9 @@ const envSchema = z.object({
   TWILIO_WHATSAPP_FROM: z.string().optional(),
   TWILIO_WEBHOOK_PUBLIC_URL: z.string().optional(),
   INVENTORY_PROVIDER: z.enum(["mock_grocery", "shopify_placeholder"]).default("mock_grocery"),
+  AGENT_DECISION_MODE: z.enum(["deterministic", "local_cli"]).default("deterministic"),
+  AGENT_LOCAL_CLI_COMMAND: z.string().optional(),
+  AGENT_LOCAL_CLI_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   SHOPIFY_STORE_DOMAIN: z.string().optional()
 });
 
@@ -29,6 +32,11 @@ export function loadConfig() {
     },
     inventory: {
       provider: env.INVENTORY_PROVIDER
+    },
+    agent: {
+      mode: env.AGENT_DECISION_MODE,
+      command: env.AGENT_LOCAL_CLI_COMMAND,
+      timeoutMs: env.AGENT_LOCAL_CLI_TIMEOUT_MS
     },
     shopify: {
       storeDomain: env.SHOPIFY_STORE_DOMAIN

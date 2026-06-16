@@ -1,15 +1,21 @@
 import type { InboundMessage } from "../messages/types.js";
 import { getDeliveryGuidance, type DeliveryGuidance } from "../delivery/deliveryGuidance.js";
 import { applyResponseGuardrails, type GuardrailResult } from "../guardrails/responseGuardrails.js";
-import type { InventoryAvailability } from "../inventory/InventoryProvider.js";
+import type {
+  InventoryAvailability,
+  InventoryCatalogProduct,
+  InventoryProvider
+} from "../inventory/InventoryProvider.js";
 import { MockInventoryProvider } from "../inventory/providers/mockInventoryProvider.js";
 import { classifyIntent, type Intent } from "../intents/classifier.js";
 import { extractFields, type ExtractedFields } from "../messages/extractFields.js";
-import { composeResponse } from "../responses/composeResponse.js";
+import { DeterministicDecisionProvider } from "./deterministicDecisionProvider.js";
+import type { AgentDecision, AgentDecisionProvider } from "./decisionTypes.js";
 
 export type OrchestratorResult = {
   responseText: string;
   shouldSend: boolean;
+  routeToHuman: boolean;
   trace: ProcessingTrace;
 };
 
@@ -19,20 +25,34 @@ export type ProcessingTrace = {
   intent: Intent;
   resolvedIntent: Intent;
   extracted: ExtractedFields;
+  catalog: InventoryCatalogProduct[];
   inventoryMatches: InventoryAvailability[];
   deliveryGuidance?: DeliveryGuidance;
+  agentDecision: AgentDecision;
   guardrails: GuardrailResult;
 };
 
-const inventoryProvider = new MockInventoryProvider();
+export type OrchestratorDependencies = {
+  inventoryProvider: InventoryProvider;
+  decisionProvider: AgentDecisionProvider;
+};
 
-export async function orchestrateInboundMessage(message: InboundMessage): Promise<OrchestratorResult> {
+const defaultDependencies: OrchestratorDependencies = {
+  inventoryProvider: new MockInventoryProvider(),
+  decisionProvider: new DeterministicDecisionProvider()
+};
+
+export async function orchestrateInboundMessage(
+  message: InboundMessage,
+  dependencies: OrchestratorDependencies = defaultDependencies
+): Promise<OrchestratorResult> {
   const intent = await classifyIntent(message);
   const extracted = extractFields(message.body);
   const resolvedIntent = resolveIntent(intent, extracted);
+  const catalog = await dependencies.inventoryProvider.listCatalog();
   const inventoryMatches =
     resolvedIntent === "check_availability"
-      ? await inventoryProvider.findAvailability({
+      ? await dependencies.inventoryProvider.findAvailability({
           searchText: message.body,
           productKeywords: extracted.productKeywords,
           requestedQuantity: extracted.requestedQuantity,
@@ -46,13 +66,15 @@ export async function orchestrateInboundMessage(message: InboundMessage): Promis
           productText: extracted.productKeywords.join(" ")
         })
       : undefined;
-  const composedResponse = composeResponse({
-    intent: resolvedIntent,
+  const agentDecision = await dependencies.decisionProvider.decide({
+    message,
     extracted,
-    inventory: inventoryMatches,
+    catalog,
+    inventoryMatches,
     deliveryGuidance
   });
-  const guardrails = applyResponseGuardrails(composedResponse);
+  const guardrails = applyResponseGuardrails(agentDecision.responseText ?? "");
+  const routeToHuman = agentDecision.action === "route_to_human";
 
   const trace: ProcessingTrace = {
     messageId: message.providerMessageId,
@@ -60,14 +82,17 @@ export async function orchestrateInboundMessage(message: InboundMessage): Promis
     intent,
     resolvedIntent,
     extracted,
+    catalog,
     inventoryMatches,
     deliveryGuidance,
+    agentDecision,
     guardrails
   };
 
   return {
     responseText: guardrails.responseText,
-    shouldSend: guardrails.allowed,
+    shouldSend: !routeToHuman && guardrails.allowed,
+    routeToHuman,
     trace
   };
 }

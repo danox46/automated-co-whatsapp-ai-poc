@@ -5,6 +5,7 @@ const sampleInputs = [
   "Tienen mayonesa grande?",
   "Tienes mayonesa grande?",
   "Necesito 2 mayonesas grandes",
+  "Que tamanos de arroz ofrecen?",
   "Tienen arroz de 5kg?",
   "Tienen pack familiar de leche?",
   "Cuanto tarda el envio a Bogota?",
@@ -25,6 +26,9 @@ const results = await Promise.all(
     return {
       input,
       classifiedIntent: result.trace.intent,
+      resolvedIntent: result.trace.resolvedIntent,
+      agentDecision: result.trace.agentDecision,
+      routeToHuman: result.routeToHuman,
       extractedFields: result.trace.extracted,
       matchedProducts: result.trace.inventoryMatches.map((match) => ({
         productName: match.productName,

@@ -1,5 +1,6 @@
 import type {
   InventoryAvailability,
+  InventoryCatalogProduct,
   InventoryProvider,
   InventoryQuery
 } from "../InventoryProvider.js";
@@ -137,6 +138,24 @@ export class MockInventoryProvider implements InventoryProvider {
     );
 
     return matchedProducts.flatMap((product) => buildProductResults(product, query));
+  }
+
+  async listCatalog(): Promise<InventoryCatalogProduct[]> {
+    return mockProducts.map((product) => ({
+      id: product.id,
+      name: product.name,
+      keywords: product.keywords,
+      productUrl: product.productUrl,
+      notes: product.deliveryNotes,
+      variants: product.variants.map((variant) => ({
+        id: variant.id,
+        label: variant.label,
+        size: variant.size,
+        available: variant.quantityAvailable > 0,
+        quantityAvailable: variant.quantityAvailable,
+        advisoryText: variant.upsell
+      }))
+    }));
   }
 }
 
