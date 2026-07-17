@@ -5,7 +5,7 @@ The WhatsApp app can delegate final response decisions to a local agent command.
 The app remains read-only. The local agent receives a grounded inventory snapshot and returns either:
 
 - `respond`: send this WhatsApp response
-- `route_to_human`: do not send an automated answer; log that a human should handle it
+- `route_to_human`: the app should treat the case as needing human help; if `responseText` is present, it may send that short acknowledgement to avoid leaving the customer with no reply
 
 ## Enable CLI Mode
 
@@ -40,12 +40,15 @@ Tune behavior in `prompts/local-codex-agent.md`. Keep that prompt focused on res
 The command receives one JSON object on stdin with:
 
 - `message`: normalized inbound WhatsApp message
-- `extracted`: product, quantity, package size, and city signals
+- `conversation`: 24-hour rolling context for the sender, including recent inbound/outbound turns and disclosure state
+- `extracted`: product, quantity, package size, department, and city signals
 - `catalog`: read-only product and variant snapshot
 - `inventoryMatches`: deterministic requested/alternative/upsell matches when available
-- `deliveryGuidance`: delivery estimate object when available
+- `deliveryGuidance`: delivery calculator object when available, including missing-field flags or grounded price/ETA values
 
 The local agent should only recommend products and variants present in `catalog`, `inventoryMatches`, or `deliveryGuidance`.
+
+`conversation.turns` exists to interpret short follow-ups, such as a customer replying `Bogota` after the bot asked for delivery location. It is not a source for inventory, prices, or delivery promises.
 
 ## Output
 
@@ -54,7 +57,7 @@ The command must print exactly one JSON object to stdout:
 ```json
 {
   "action": "respond",
-  "responseText": "Para Arroz, tenemos estas presentaciones: bolsa 5kg, bolsa 1kg.",
+  "responseText": "Para Riko Malt 500Ml Venezuela, tenemos estas presentaciones: botella 500ml, 500ml x 3 unidades.",
   "confidence": 0.82,
   "understanding": {
     "intent": "unclear",
@@ -108,6 +111,7 @@ type AgentDecision = {
 You are the read-only WhatsApp inventory advisor for Automated & Co.
 Use only the provided catalog, inventoryMatches, and deliveryGuidance.
 Do not invent products, prices, stock, URLs, orders, or delivery promises.
+For delivery questions, use only deliveryGuidance. Ask for department and city/municipio when missing.
 Decide whether to respond or route_to_human.
 Return only valid JSON matching the AgentDecision schema.
 Prefer a useful grounded attempt when a known product is detected.

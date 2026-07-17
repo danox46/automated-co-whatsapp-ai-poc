@@ -28,99 +28,127 @@ type MockProduct = {
 
 const mockProducts: MockProduct[] = [
   {
-    id: "prod_mayonesa",
-    name: "Mayonesa",
-    keywords: ["mayonesa", "mayo", "mayonnaise"],
-    productUrl: "https://automated.co/mock/mayonesa",
-    deliveryNotes: "Producto refrigerado despues de abrir. Entrega estandar aplica.",
+    id: "prod_diablitos_underwood",
+    name: "Diablitos Underwood",
+    keywords: ["diablitos", "underwood", "jamon endiablado", "jamón endiablado"],
+    productUrl: "https://elportalvenezolano.com/products/diablitos",
+    deliveryNotes: "Snapshot copiado del catalogo publico. Disponibilidad real debe venir luego por API.",
     variants: [
       {
-        id: "mayo_grande_900g",
-        label: "frasco grande 900g",
-        size: "grande",
-        quantityAvailable: 0
+        id: "diablitos_54g_x24",
+        label: "54g x 24 unidades",
+        size: "54g",
+        quantityAvailable: 8,
+        upsell: "Tambien aparece disponible la caja de 54g x 48 unidades si necesitas volumen."
       },
       {
-        id: "mayo_mediana_450g",
-        label: "frasco mediano 450g",
-        size: "mediana",
-        quantityAvailable: 12,
-        substituteFor: { size: "grande", unitsNeeded: 2 },
-        upsell: "Tambien tenemos salsa de tomate mediana para completar mercado."
+        id: "diablitos_54g_x48",
+        label: "54g x 48 unidades",
+        size: "pack x48",
+        quantityAvailable: 3
       },
       {
-        id: "mayo_pequena_220g",
-        label: "frasco pequeno 220g",
-        size: "pequena",
-        quantityAvailable: 20,
-        substituteFor: { size: "mediana", unitsNeeded: 2 }
-      }
-    ]
-  },
-  {
-    id: "prod_arroz",
-    name: "Arroz",
-    keywords: ["arroz", "rice"],
-    productUrl: "https://automated.co/mock/arroz",
-    deliveryNotes: "Producto pesado; el tiempo puede variar segun zona.",
-    variants: [
-      {
-        id: "arroz_5kg",
-        label: "bolsa 5kg",
-        size: "5kg",
-        quantityAvailable: 4,
-        upsell: "Si es para la semana, tambien tenemos frijol rojo 1kg."
+        id: "diablitos_115g_x12",
+        label: "115g x 12 unidades",
+        size: "115g",
+        quantityAvailable: 4
       },
       {
-        id: "arroz_1kg",
-        label: "bolsa 1kg",
-        size: "1kg",
-        quantityAvailable: 16,
-        substituteFor: { size: "5kg", unitsNeeded: 5 }
-      }
-    ]
-  },
-  {
-    id: "prod_leche",
-    name: "Leche entera",
-    keywords: ["leche", "milk"],
-    productUrl: "https://automated.co/mock/leche-entera",
-    deliveryNotes: "Producto de alta rotacion. Disponibilidad puede cambiar rapido.",
-    variants: [
-      {
-        id: "leche_familiar_6x1l",
-        label: "six pack familiar 6 x 1L",
-        size: "familiar",
+        id: "diablitos_115g_x24",
+        label: "115g x 24 unidades",
+        size: "pack x24",
         quantityAvailable: 2
-      },
-      {
-        id: "leche_1l",
-        label: "botella 1L",
-        size: "1l",
-        quantityAvailable: 18,
-        substituteFor: { size: "familiar", unitsNeeded: 6 }
       }
     ]
   },
   {
-    id: "prod_atun",
-    name: "Atun en lata",
-    keywords: ["atun", "atún", "tuna"],
-    productUrl: "https://automated.co/mock/atun-en-lata",
-    deliveryNotes: "Buen candidato para compras por volumen.",
+    id: "prod_riko_malt",
+    name: "Riko Malt 500Ml Venezuela",
+    keywords: ["riko malt", "rikomalt", "maltin", "malta", "malt"],
+    productUrl: "https://elportalvenezolano.com/products/riko-malt-500ml-venezuela",
+    deliveryNotes: "Bebida venezolana. Snapshot copiado del catalogo publico.",
     variants: [
       {
-        id: "atun_pack_6",
-        label: "pack x6 latas",
-        size: "pack x6",
-        quantityAvailable: 0
+        id: "riko_malt_500ml",
+        label: "botella 500ml",
+        size: "500ml",
+        quantityAvailable: 10,
+        upsell: "Tambien aparece la presentacion x 3 unidades."
       },
       {
-        id: "atun_lata",
-        label: "lata individual",
+        id: "riko_malt_500ml_x3",
+        label: "500ml x 3 unidades",
+        size: "pack x3",
+        quantityAvailable: 5,
+        substituteFor: { size: "500ml", unitsNeeded: 1 }
+      }
+    ]
+  },
+  {
+    id: "prod_golden_manzanita",
+    name: "Golden Manzanita lata 355 Ml Venezuela",
+    keywords: ["golden", "manzanita", "golden manzanita", "refresco de manzana"],
+    productUrl: "https://elportalvenezolano.com/products/golden-manzanita-botella-350-ml-venezuela-copia",
+    deliveryNotes: "Refresco en lata. Snapshot copiado del catalogo publico.",
+    variants: [
+      {
+        id: "golden_355ml",
+        label: "lata 355ml",
+        size: "355ml",
+        quantityAvailable: 12,
+        upsell: "Tambien aparece disponible el pack x 6 unidades."
+      },
+      {
+        id: "golden_355ml_x6",
+        label: "lata 355ml x 6 unidades",
+        size: "pack x6",
+        quantityAvailable: 4,
+        substituteFor: { size: "355ml", unitsNeeded: 1 }
+      }
+    ]
+  },
+  {
+    id: "prod_canelitas",
+    name: "Canelitas Marinela",
+    keywords: ["canelitas", "canelita", "galletas de canela", "galletas marinela"],
+    productUrl: "https://elportalvenezolano.com/products/canelitas-marinela-galletas-venezolanas",
+    deliveryNotes: "Galletas venezolanas. El pack x3 aparece no disponible en el snapshot publico.",
+    variants: [
+      {
+        id: "canelitas_individual",
+        label: "paquete individual",
         size: "individual",
-        quantityAvailable: 30,
-        substituteFor: { size: "pack x6", unitsNeeded: 6 }
+        quantityAvailable: 9,
+        substituteFor: { size: "pack x3", unitsNeeded: 3 }
+      },
+      {
+        id: "canelitas_x3",
+        label: "pack x 3 unidades",
+        size: "pack x3",
+        quantityAvailable: 0
+      }
+    ]
+  },
+  {
+    id: "prod_sopa_maggi",
+    name: "Sopa de Pollo con Fideos Maggi 62g Venezuela",
+    keywords: ["sopa maggi", "maggi", "sopa de pollo", "sopa con fideos"],
+    productUrl: "https://elportalvenezolano.com/products/sopa-maggi-62gr-venezuela",
+    deliveryNotes: "Producto liviano. Snapshot copiado del catalogo publico.",
+    variants: [
+      {
+        id: "sopa_maggi_62g",
+        label: "sobre 62g",
+        size: "62g",
+        quantityAvailable: 15,
+        upsell: "Tambien aparece disponible el pack x 3 unidades."
+      },
+      {
+        id: "sopa_maggi_62g_x3",
+        label: "62g x 3 unidades",
+        size: "pack x3",
+        quantityAvailable: 5,
+        substituteFor: { size: "62g", unitsNeeded: 1 }
       }
     ]
   }
@@ -258,7 +286,10 @@ function pluralizeLabel(label: string) {
     .replace(/^frasco pequeno/, "frascos pequenos")
     .replace(/^bolsa /, "bolsas ")
     .replace(/^botella /, "botellas ")
-    .replace(/^lata individual/, "latas individuales");
+    .replace(/^paquete individual/, "paquetes individuales")
+    .replace(/^lata /, "latas ")
+    .replace(/^paquete /, "paquetes ")
+    .replace(/^sobre /, "sobres ");
 }
 
 function pluralizeSize(size: string) {

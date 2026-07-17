@@ -19,7 +19,23 @@ const availabilityKeywords = [
   "in stock"
 ];
 
-const deliveryKeywords = ["envio", "envío", "entrega", "llega", "tarda", "demora", "mandan"];
+const deliveryKeywords = [
+  "envio",
+  "envío",
+  "domicilio",
+  "delivery",
+  "entrega",
+  "llega",
+  "tarda",
+  "demora",
+  "mandan",
+  "cuanto cuesta",
+  "cuánto cuesta",
+  "cuanto para",
+  "cuánto para",
+  "costo de envio",
+  "precio del envio"
+];
 
 export async function classifyIntent(message: InboundMessage): Promise<Intent> {
   const text = message.body.toLowerCase();

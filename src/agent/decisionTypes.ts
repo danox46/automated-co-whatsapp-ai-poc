@@ -6,6 +6,7 @@ import type {
 import type { Intent } from "../intents/classifier.js";
 import type { ExtractedFields } from "../messages/extractFields.js";
 import type { InboundMessage } from "../messages/types.js";
+import type { ConversationContext } from "../sessions/conversationSessionStore.js";
 
 export type AgentAction = "respond" | "route_to_human";
 
@@ -17,6 +18,7 @@ export type AgentUnderstanding = {
 
 export type AgentDecisionRequest = {
   message: InboundMessage;
+  conversation?: ConversationContext;
   extracted: ExtractedFields;
   catalog: InventoryCatalogProduct[];
   inventoryMatches: InventoryAvailability[];

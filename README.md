@@ -2,21 +2,26 @@
 
 Reactive WhatsApp assistant POC using Twilio. The bot is inbound-only and read-only: it answers product availability and delivery guidance questions, but it does not create orders, update Shopify, write to CRM, open tickets, send campaigns, or initiate proactive messages.
 
-The current business loop uses mocked grocery inventory so the response behavior can be tested before connecting a real inventory surface.
+The current business loop uses a copied mock snapshot of public grocery products so the response behavior can be tested before connecting a real inventory surface.
 
 ## What It Does
 
 - Receives inbound WhatsApp webhooks from Twilio
 - Normalizes Twilio messages into an internal message shape
 - Classifies simple delivery and availability requests
-- Extracts product, package size, quantity, and city signals
+- Extracts product, package size, quantity, department, and city signals
 - Looks up a mocked grocery inventory provider
 - Leans toward attempting a helpful inventory answer when a known product is detected
 - Can delegate final response decisions to a local CLI/Codex agent command
-- Recommends real mock alternatives, such as replacing unavailable large mayo with medium jars
+- Keeps a 24-hour in-memory conversation session per WhatsApp sender
+- Waits 5 idle seconds to combine multi-part WhatsApp messages before processing
+- Asks two clarifying questions before escalating unclear messages to a human
+- Sends an admin WhatsApp notification when a conversation needs human review
+- Recommends grounded mock alternatives, such as replacing an unavailable Canelitas pack with individual packages
+- Answers delivery calculator questions with department/city, price, and estimated window from the public calculator page
 - Adds limited upsell suggestions only after the first query is answered
 - Sends a WhatsApp response through Twilio's REST API
-- Logs the full processing trace for debugging
+- Persists webhook event logs with session and trace data for later analysis
 
 ## Current Mock Inventory
 
@@ -26,10 +31,11 @@ Open the static viewer:
 
 Products currently modeled:
 
-- Mayonesa
-- Arroz
-- Leche entera
-- Atun en lata
+- Diablitos Underwood
+- Riko Malt 500Ml Venezuela
+- Golden Manzanita lata 355 Ml Venezuela
+- Canelitas Marinela
+- Sopa de Pollo con Fideos Maggi 62g Venezuela
 
 The source of truth for mocked inventory behavior is [src/inventory/providers/mockInventoryProvider.ts](./src/inventory/providers/mockInventoryProvider.ts).
 
@@ -47,6 +53,7 @@ Required for live WhatsApp replies:
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+TWILIO_ADMIN_REVIEW_TO=whatsapp:+573006211340
 ```
 
 Optional:
@@ -54,6 +61,8 @@ Optional:
 ```text
 PORT=3000
 LOG_LEVEL=debug
+WEBHOOK_EVENT_LOG_PATH=.runtime/webhook-events.jsonl
+INBOUND_IDLE_BUFFER_MS=5000
 TWILIO_WEBHOOK_PUBLIC_URL=
 INVENTORY_PROVIDER=mock_grocery
 AGENT_DECISION_MODE=deterministic
@@ -92,6 +101,10 @@ npm run demo
 Local agent CLI contract docs:
 
 [docs/AGENT_CLI_CONTRACT.md](./docs/AGENT_CLI_CONTRACT.md)
+
+New Twilio account setup handoff:
+
+[docs/CODEX_TWILIO_ACCOUNT_SETUP.md](./docs/CODEX_TWILIO_ACCOUNT_SETUP.md)
 
 Mock local agent command:
 
@@ -144,15 +157,17 @@ For a new Codex instance or clean machine:
 9. Start a tunnel with `npm run tunnel` if testing locally with Twilio.
 10. Configure the Twilio WhatsApp webhook URL.
 
+For a complete new-account checklist, use [docs/CODEX_TWILIO_ACCOUNT_SETUP.md](./docs/CODEX_TWILIO_ACCOUNT_SETUP.md).
+
 Useful smoke-test WhatsApp messages:
 
 ```text
-Tienes mayonesa grande?
-Necesito 2 mayonesas grandes
-mayonesa grande
-Tienen arroz de 5kg?
-Tienen atun pack x6?
-Cuanto tarda el envio a Bogota?
+Tienen Riko Malt?
+Que presentaciones de Golden Manzanita tienen?
+Tienen Canelitas pack x3?
+Cuanto cuesta el domicilio a Medellin, Antioquia?
+Cuanto cuesta el domicilio?
+Cuanto para Planeta Rica?
 ```
 
 ## Scripts
@@ -178,12 +193,26 @@ src/messages      Message normalization and field extraction
 src/intents       Lightweight classifier
 src/agent         Orchestrator and processing trace
 src/inventory     Provider interface and mock provider
-src/delivery      Mock delivery estimates
+src/delivery      Public Shopify delivery calculator adapter
 src/responses     WhatsApp response composition
 src/guardrails    Response safety checks
-src/logging       JSON logger
+src/notifications Admin review notification composition
+src/sessions      24-hour in-memory sender session context
+src/logging       Console logger and persistent webhook event log
 src/local         Demo and environment check scripts
 ```
+
+## Persistent Webhook Logs
+
+Each Twilio webhook appends one JSON line to:
+
+```text
+.runtime/webhook-events.jsonl
+```
+
+Each event includes normalized inbound text, sender/recipient, batched message parts when present, session id, routing outcome, response text, Twilio send result, and the processing trace. This makes it possible to reconstruct back-and-forth sessions for later analysis and correction work.
+
+These logs contain customer phone numbers and message bodies, so `.runtime/` is gitignored and the file should be treated as sensitive operational data.
 
 ## Read-Only Rules
 
@@ -201,5 +230,11 @@ Before replacing the mock provider, decide:
 - Which source is authoritative for availability?
 - Whether availability is exact stock, sellable stock, or display-safe availability.
 - Whether substitutions are configured in data, inferred from product metadata, or generated by an agent.
-- How to model package equivalence, such as `2 medium mayo = 1 large mayo`.
+- How to model package equivalence, such as `3 individual Canelitas = 1 pack x3`.
 - Whether upsells come from merchandising rules, collections, bundles, or product relationships.
+
+## Delivery Calculator Roadmap
+
+The current delivery module reads the store's public Shopify calculator data from the product page: department + city/municipio in, domicile price and estimated delivery window out. A future production integration can replace this with an approved read-only Shopify/API-backed source without changing the response pipeline.
+
+When replacing the mock, keep it read-only and polite: respect site terms, avoid bypassing auth or anti-abuse controls, rate-limit requests, cache when reasonable, and do not collect personal data beyond what the customer provided for the delivery quote.

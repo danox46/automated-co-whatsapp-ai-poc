@@ -74,7 +74,7 @@ export class DeterministicDecisionProvider implements AgentDecisionProvider {
     return {
       action: "respond",
       responseText:
-        "No encontre ese producto en el inventario de prueba. Puedo revisar mayonesa, arroz, leche o atun. Que producto quieres consultar?",
+        "No encontre ese producto en el inventario de prueba. Puedo revisar Diablitos, Riko Malt, Golden Manzanita, Canelitas o Sopa Maggi. Que producto quieres consultar?",
       confidence: 0.5,
       understanding: {
         intent: "unclear",

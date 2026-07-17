@@ -11,7 +11,7 @@ export function applyResponseGuardrails(responseText: string): GuardrailResult {
     return {
       allowed: true,
       reasons: ["Fallback response applied."],
-      responseText: "Me ayudas con un poco mas de detalle? Puedo revisar disponibilidad o tiempos de envio."
+      responseText: "Me ayudas con un poco mas de detalle para entender como ayudarte?"
     };
   }
 

@@ -2,14 +2,15 @@ import { orchestrateInboundMessage } from "../agent/orchestrator.js";
 import { normalizeInboundMessage } from "../messages/normalizeInboundMessage.js";
 
 const sampleInputs = [
-  "Tienen mayonesa grande?",
-  "Tienes mayonesa grande?",
-  "Necesito 2 mayonesas grandes",
-  "Que tamanos de arroz ofrecen?",
-  "Tienen arroz de 5kg?",
-  "Tienen pack familiar de leche?",
-  "Cuanto tarda el envio a Bogota?",
-  "Tienen atun pack x6?"
+  "Tienen Diablitos de 54g?",
+  "Tienes Riko Malt 500ml?",
+  "Necesito 2 maltas Riko Malt",
+  "Que presentaciones de Golden Manzanita ofrecen?",
+  "Tienen Canelitas pack x3?",
+  "Tienen Sopa Maggi 62g?",
+  "Cuanto cuesta el domicilio a Medellin, Antioquia?",
+  "Cuanto cuesta el domicilio?",
+  "Cuanto para Planeta Rica?"
 ];
 
 const results = await Promise.all(

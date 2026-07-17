@@ -19,12 +19,12 @@ export function composeResponse(input: ResponseCompositionInput): string {
     return composeAvailabilityResponse(input);
   }
 
-  return "Claro. Puedo ayudarte a revisar disponibilidad o tiempos de envio. Que producto o ciudad quieres consultar?";
+  return "Claro. Me cuentas un poco mas para entender como ayudarte?";
 }
 
 function composeDeliveryResponse(deliveryGuidance?: DeliveryGuidance) {
   if (!deliveryGuidance) {
-    return "Para estimar el envio, dime la ciudad de destino.";
+    return "Para calcular el domicilio, dime el departamento y la ciudad o municipio.";
   }
 
   return `${deliveryGuidance.summary} ${deliveryGuidance.caveats[0]}`;
@@ -34,7 +34,7 @@ function composeAvailabilityResponse(input: ResponseCompositionInput) {
   const matches = input.inventory ?? [];
 
   if (matches.length === 0) {
-    return "No encontre ese producto en el inventario de prueba. Puedo revisar mayonesa, arroz, leche o atun. Que producto quieres consultar?";
+    return "No encontre ese producto en el inventario de prueba. Puedo revisar Diablitos, Riko Malt, Golden Manzanita, Canelitas o Sopa Maggi. Que producto quieres consultar?";
   }
 
   const productNames = new Set(matches.map((match) => match.productName));
@@ -48,7 +48,7 @@ function composeAvailabilityResponse(input: ResponseCompositionInput) {
 
   if (hasVariants && !input.extracted.size) {
     const quantityText = requestedQuantity ? ` ${requestedQuantity} unidades de` : "";
-    return `Para revisar${quantityText} ${productName}, me dices que presentacion necesitas? Por ejemplo grande, mediana, 1kg o familiar.`;
+    return `Para revisar${quantityText} ${productName}, me dices que presentacion necesitas? Por ejemplo 54g, 500ml, individual o pack x3.`;
   }
 
   const requestedMatches = matches.filter((match) => match.advisoryRole === "requested");

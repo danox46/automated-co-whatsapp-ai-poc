@@ -6,41 +6,41 @@ describe("MockInventoryProvider", () => {
 
   it("matches an available grocery package", async () => {
     const matches = await provider.findAvailability({
-      searchText: "Tienen arroz de 5kg?",
-      productKeywords: ["arroz"],
-      size: "5kg"
+      searchText: "Tienen diablitos de 54g?",
+      productKeywords: ["diablitos"],
+      size: "54g"
     });
 
     expect(matches[0]).toMatchObject({
-      productName: "Arroz",
-      variantLabel: "bolsa 5kg",
+      productName: "Diablitos Underwood",
+      variantLabel: "54g x 24 unidades",
       available: true,
-      quantityAvailable: 4,
+      quantityAvailable: 8,
       advisoryRole: "requested"
     });
   });
 
   it("returns alternatives when requested package is unavailable", async () => {
     const matches = await provider.findAvailability({
-      searchText: "Tienen mayonesa grande?",
-      productKeywords: ["mayonesa"],
-      size: "grande"
+      searchText: "Tienen canelitas pack x3?",
+      productKeywords: ["canelitas"],
+      size: "pack x3"
     });
 
     expect(matches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          productName: "Mayonesa",
-          variantLabel: "frasco grande 900g",
+          productName: "Canelitas Marinela",
+          variantLabel: "pack x 3 unidades",
           available: false,
           advisoryRole: "requested"
         }),
         expect.objectContaining({
-          productName: "Mayonesa",
-          variantLabel: "frasco mediano 450g",
+          productName: "Canelitas Marinela",
+          variantLabel: "paquete individual",
           available: true,
           advisoryRole: "alternative",
-          advisoryText: expect.stringContaining("cubrir 1 grande")
+          advisoryText: expect.stringContaining("cubrir 1 pack x3")
         })
       ])
     );
@@ -48,11 +48,13 @@ describe("MockInventoryProvider", () => {
 
   it("does not expose unrelated product alternatives", async () => {
     const matches = await provider.findAvailability({
-      searchText: "Tienen atun pack x6?",
-      productKeywords: ["atun"],
+      searchText: "Tienen golden manzanita pack x6?",
+      productKeywords: ["golden manzanita"],
       size: "pack x6"
     });
 
-    expect(new Set(matches.map((match) => match.productName))).toEqual(new Set(["Atun en lata"]));
+    expect(new Set(matches.map((match) => match.productName))).toEqual(
+      new Set(["Golden Manzanita lata 355 Ml Venezuela"])
+    );
   });
 });

@@ -4,9 +4,12 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  WEBHOOK_EVENT_LOG_PATH: z.string().default(".runtime/webhook-events.jsonl"),
+  INBOUND_IDLE_BUFFER_MS: z.coerce.number().int().nonnegative().default(5000),
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_WHATSAPP_FROM: z.string().optional(),
+  TWILIO_ADMIN_REVIEW_TO: z.string().optional(),
   TWILIO_WEBHOOK_PUBLIC_URL: z.string().optional(),
   INVENTORY_PROVIDER: z.enum(["mock_grocery", "shopify_placeholder"]).default("mock_grocery"),
   AGENT_DECISION_MODE: z.enum(["deterministic", "local_cli"]).default("deterministic"),
@@ -24,10 +27,17 @@ export function loadConfig() {
     nodeEnv: env.NODE_ENV,
     port: env.PORT,
     logLevel: env.LOG_LEVEL,
+    webhookEventLog: {
+      path: env.WEBHOOK_EVENT_LOG_PATH
+    },
+    inboundBuffer: {
+      idleMs: env.INBOUND_IDLE_BUFFER_MS
+    },
     twilio: {
       accountSid: env.TWILIO_ACCOUNT_SID,
       authToken: env.TWILIO_AUTH_TOKEN,
       whatsappFrom: env.TWILIO_WHATSAPP_FROM,
+      adminReviewTo: env.TWILIO_ADMIN_REVIEW_TO,
       webhookPublicUrl: env.TWILIO_WEBHOOK_PUBLIC_URL
     },
     inventory: {

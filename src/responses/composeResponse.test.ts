@@ -5,50 +5,51 @@ describe("composeResponse", () => {
   it("confirms availability without exposing exact mock stock counts", () => {
     const response = composeResponse({
       intent: "check_availability",
-      extracted: { productKeywords: ["arroz"], size: "5kg" },
+      extracted: { productKeywords: ["diablitos"], size: "54g" },
       inventory: [
         {
-          productId: "prod_arroz",
-          productName: "Arroz",
-          variantLabel: "bolsa 5kg",
+          productId: "prod_diablitos_underwood",
+          productName: "Diablitos Underwood",
+          variantLabel: "54g x 24 unidades",
           available: true,
-          quantityAvailable: 4,
+          quantityAvailable: 8,
           requestedMatch: true,
           advisoryRole: "requested",
-          productUrl: "https://automated.co/mock/arroz"
+          productUrl: "https://elportalvenezolano.com/products/diablitos"
         }
       ]
     });
 
     expect(response).toContain("aparece disponible");
-    expect(response).not.toContain("4");
+    expect(response).not.toContain("8 disponibles");
   });
 
   it("offers a substitution when the requested grocery size is unavailable", () => {
     const response = composeResponse({
       intent: "check_availability",
-      extracted: { productKeywords: ["mayonesa"], size: "grande" },
+      extracted: { productKeywords: ["canelitas"], size: "pack x3" },
       inventory: [
         {
-          productId: "prod_mayonesa",
-          productName: "Mayonesa",
-          variantLabel: "frasco grande 900g",
+          productId: "prod_canelitas",
+          productName: "Canelitas Marinela",
+          variantLabel: "pack x 3 unidades",
           available: false,
           quantityAvailable: 0,
           requestedMatch: true,
           advisoryRole: "requested",
-          productUrl: "https://automated.co/mock/mayonesa"
+          productUrl: "https://elportalvenezolano.com/products/canelitas-marinela-galletas-venezolanas"
         },
         {
-          productId: "prod_mayonesa",
-          productName: "Mayonesa",
-          variantLabel: "frasco mediano 450g",
+          productId: "prod_canelitas",
+          productName: "Canelitas Marinela",
+          variantLabel: "paquete individual",
           available: true,
-          quantityAvailable: 12,
+          quantityAvailable: 9,
           requestedMatch: false,
           advisoryRole: "alternative",
-          advisoryText: "Como alternativa, puedes pedir 2 frascos medianos 450g para cubrir 1 grande.",
-          productUrl: "https://automated.co/mock/mayonesa"
+          advisoryText:
+            "Como alternativa, puedes pedir 3 paquetes individuales para cubrir 1 pack x3.",
+          productUrl: "https://elportalvenezolano.com/products/canelitas-marinela-galletas-venezolanas"
         }
       ]
     });
@@ -62,44 +63,51 @@ describe("composeResponse", () => {
   it("adds an upsell only after the requested item is available", () => {
     const response = composeResponse({
       intent: "check_availability",
-      extracted: { productKeywords: ["arroz"], size: "5kg" },
+      extracted: { productKeywords: ["riko malt"], size: "500ml" },
       inventory: [
         {
-          productId: "prod_arroz",
-          productName: "Arroz",
-          variantLabel: "bolsa 5kg",
+          productId: "prod_riko_malt",
+          productName: "Riko Malt 500Ml Venezuela",
+          variantLabel: "botella 500ml",
           available: true,
-          quantityAvailable: 4,
+          quantityAvailable: 10,
           requestedMatch: true,
           advisoryRole: "requested",
-          productUrl: "https://automated.co/mock/arroz"
+          productUrl: "https://elportalvenezolano.com/products/riko-malt-500ml-venezuela"
         },
         {
-          productId: "prod_arroz",
-          productName: "Arroz",
-          variantLabel: "bolsa 1kg",
+          productId: "prod_riko_malt",
+          productName: "Riko Malt 500Ml Venezuela",
+          variantLabel: "500ml x 3 unidades",
           available: true,
-          quantityAvailable: 16,
+          quantityAvailable: 5,
           requestedMatch: false,
           advisoryRole: "upsell",
-          advisoryText: "Si es para la semana, tambien tenemos frijol rojo 1kg.",
-          productUrl: "https://automated.co/mock/arroz"
+          advisoryText: "Tambien aparece la presentacion x 3 unidades.",
+          productUrl: "https://elportalvenezolano.com/products/riko-malt-500ml-venezuela"
         }
       ]
     });
 
     expect(response).toContain("aparece disponible");
-    expect(response).toContain("tambien tenemos");
+    expect(response).toContain("Tambien aparece");
   });
 
   it("does not promise exact delivery dates", () => {
     const response = composeResponse({
       intent: "delivery_guidance",
-      extracted: { productKeywords: [], city: "bogota" },
+      extracted: { productKeywords: [], department: "bogota", city: "bogota" },
       deliveryGuidance: {
-        destinationType: "bogota",
-        summary: "A Bogota el envio suele tardar 1-2 dias habiles.",
-        caveats: ["Es una estimacion, no una fecha exacta garantizada."],
+        source: "public_shopify_delivery_calculator",
+        sourceUrl: "https://elportalvenezolano.com/products/diablitos?variant=50232260198676",
+        department: "bogota",
+        city: "bogota",
+        zone: "Bogota urbana",
+        priceCop: 12000,
+        estimatedDelivery: "Llega hoy a toda Bogota",
+        summary: "Para Bogota, el domicilio aparece en $12.000 COP y la entrega estimada es llega hoy a toda bogota.",
+        caveats: ["Es una estimacion del calculador de domicilio, no una promesa exacta."],
+        needsDepartment: false,
         needsCity: false
       }
     });

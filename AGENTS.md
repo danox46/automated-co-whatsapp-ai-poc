@@ -9,6 +9,7 @@ This repository is a read-only, reactive WhatsApp grocery advisor POC for Automa
 - Do not add order creation, cart mutation, Shopify writes, CRM writes, ticket creation, or customer/product/inventory updates.
 - Inventory integrations must remain read-only behind `InventoryProvider`.
 - Prefer helpful attempts over generic clarification when a known product is detected.
+- Do not escalate the first two unclear messages. Ask focused clarifications first; escalate on the third consecutive unclear inbound turn or clear human-only topics.
 - Do not add LLM calls until a later task explicitly asks for them.
 
 ## Current Runtime
@@ -51,9 +52,13 @@ Use `.env.example` as the template. Never commit `.env`.
 - `src/agent/decisionTypes.ts`: local agent decision contract
 - `src/agent/localCliDecisionProvider.ts`: JSON stdin/stdout bridge for local Codex-style commands
 - `prompts/local-codex-agent.md`: runtime prompt for the local Codex decision agent
+- `src/sessions/conversationSessionStore.ts`: 24-hour in-memory sender session context
+- `src/logging/webhookEventLog.ts`: append-only JSONL webhook trace log
+- `src/notifications/adminReviewNotification.ts`: internal WhatsApp review alert text
 - `src/inventory/InventoryProvider.ts`: read-only provider contract
 - `src/inventory/providers/mockInventoryProvider.ts`: current mock grocery catalog and alternatives
-- `src/messages/extractFields.ts`: product, package size, quantity, and city extraction
+- `src/messages/extractFields.ts`: product, package size, quantity, department, and city extraction
+- `src/delivery/deliveryGuidance.ts`: mock Shopify delivery calculator adapter
 - `src/responses/composeResponse.ts`: safe WhatsApp response text
 - `src/twilio/webhookHandler.ts`: inbound webhook handling
 - `src/twilio/sendService.ts`: Twilio REST send
@@ -72,6 +77,7 @@ Add or update tests when changing:
 - advisory response wording
 - intent resolution
 - delivery estimates
+- delivery calculator source behavior
 
 Do not add automated tests that send live WhatsApp messages by default.
 
@@ -85,3 +91,4 @@ The next major design decision is the real inventory source. Before replacing th
 - display-safe product URLs
 - out-of-stock alternatives
 - read-only auth and API boundaries
+- public delivery calculator lookup and caching behavior
