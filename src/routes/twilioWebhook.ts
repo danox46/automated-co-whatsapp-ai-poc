@@ -1,9 +1,16 @@
 import { Router } from "express";
 import type { AppConfig } from "../config/env.js";
-import { createTwilioWhatsappWebhookHandler } from "../twilio/webhookHandler.js";
+import type { OperatorRuntime } from "../operator/runtime.js";
+import { createTwilioStatusWebhookHandler, createTwilioWhatsappWebhookHandler } from "../twilio/webhookHandler.js";
+import { createTwilioSignatureMiddleware } from "../twilio/signatureValidation.js";
 
-export function createTwilioWebhookRouter(config: AppConfig) {
+export function createTwilioWebhookRouter(config: AppConfig, runtime: OperatorRuntime) {
   const twilioWebhookRouter = Router();
-  twilioWebhookRouter.post("/whatsapp", createTwilioWhatsappWebhookHandler(config));
+  const validateSignature = createTwilioSignatureMiddleware({
+    authToken: config.twilio.authToken,
+    publicUrl: config.twilio.webhookPublicUrl
+  });
+  twilioWebhookRouter.post("/whatsapp", validateSignature, createTwilioWhatsappWebhookHandler(config, runtime));
+  twilioWebhookRouter.post("/status", validateSignature, createTwilioStatusWebhookHandler(runtime));
   return twilioWebhookRouter;
 }

@@ -2,14 +2,18 @@
   "name": "automated-co-whatsapp-ai-poc",
   "version": "0.1.0",
   "private": true,
-  "description": "Reactive read-only WhatsApp grocery advisor POC using Twilio.",
+  "description": "Reactive WhatsApp advisor with a durable PC-local operator inbox.",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "dev:ui": "vite --config operator-ui/vite.config.ts",
     "tunnel": "cloudflared tunnel --url http://localhost:3000",
     "start": "node dist/server.js",
-    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "inbox": "npm run build && node dist/server.js",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('operator-ui/dist',{recursive:true,force:true})\"",
+    "build:server": "tsc -p tsconfig.json",
+    "build:ui": "vite build --config operator-ui/vite.config.ts",
+    "build": "npm run clean && npm run build:server && npm run build:ui",
     "typecheck": "tsc --noEmit",
     "check:env": "tsx src/local/checkEnv.ts",
     "test": "vitest run",
@@ -17,22 +21,34 @@
     "verify": "npm run typecheck && npm test && npm run build",
     "agent:mock": "tsx src/local/mockAgentCli.ts",
     "agent:codex": "tsx src/local/codexAgentCli.ts",
-    "demo": "tsx src/local/demo.ts"
+    "demo": "tsx src/local/demo.ts",
+    "demo:inbox": "npm run build && node dist/local/operatorDemo.js"
   },
   "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "twilio": "^6.1.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
     "cloudflared": "^0.7.1",
+    "jsdom": "^30.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
+    "vite": "^8.2.2",
     "vitest": "^4.1.9"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   }
 }

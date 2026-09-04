@@ -2,9 +2,15 @@ import { z } from "zod";
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  PORT: z.coerce.number().int().positive().default(3000),
+  WEBHOOK_PORT: z.coerce.number().int().positive().default(3000),
+  OPERATOR_PORT: z.coerce.number().int().positive().default(3100),
+  OPERATOR_HOST: z.literal("127.0.0.1").default("127.0.0.1"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   WEBHOOK_EVENT_LOG_PATH: z.string().default(".runtime/webhook-events.jsonl"),
+  OPERATOR_DATABASE_PATH: z.string().default(".runtime/operator-inbox.sqlite"),
+  OPERATOR_MEDIA_PATH: z.string().default(".runtime/media"),
+  OPERATOR_SETTINGS_PATH: z.string().default(".runtime/operator-settings.json"),
+  OPERATOR_DEMO_MODE: z.enum(["true", "false"]).default("false"),
   INBOUND_IDLE_BUFFER_MS: z.coerce.number().int().nonnegative().default(5000),
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
@@ -25,10 +31,18 @@ export function loadConfig() {
 
   return {
     nodeEnv: env.NODE_ENV,
-    port: env.PORT,
+    webhookPort: env.WEBHOOK_PORT,
+    operatorPort: env.OPERATOR_PORT,
+    operatorHost: env.OPERATOR_HOST,
     logLevel: env.LOG_LEVEL,
     webhookEventLog: {
       path: env.WEBHOOK_EVENT_LOG_PATH
+    },
+    operator: {
+      databasePath: env.OPERATOR_DATABASE_PATH,
+      mediaPath: env.OPERATOR_MEDIA_PATH,
+      settingsPath: env.OPERATOR_SETTINGS_PATH,
+      demoMode: env.OPERATOR_DEMO_MODE === "true"
     },
     inboundBuffer: {
       idleMs: env.INBOUND_IDLE_BUFFER_MS

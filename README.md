@@ -2,6 +2,22 @@
 
 Reactive WhatsApp assistant POC using Twilio. The bot is inbound-only and read-only: it answers product availability and delivery guidance questions, but it does not create orders, update Shopify, write to CRM, open tickets, send campaigns, or initiate proactive messages.
 
+It also includes a durable, single-operator inbox that runs only on this PC. Conversations, aliases, message status, and received media are stored in local SQLite; public WhatsApp profile names are shown when Twilio supplies `ProfileName`.
+
+## Local Operator Inbox
+
+Run the safe synthetic demo without Twilio credentials:
+
+```bash
+npm run demo:inbox
+```
+
+Open `http://127.0.0.1:3100`. The command builds both applications, seeds an isolated demo database, and reports database, Twilio, and tunnel readiness without printing secrets.
+
+For the regular local runtime use `npm run inbox`. The operator surface always binds to `127.0.0.1`; the separate webhook listener uses `WEBHOOK_PORT`. Twilio and tunnel activation remain manual, separately approved steps.
+
+See [docs/OPERATOR_INBOX.md](./docs/OPERATOR_INBOX.md) for behavior, privacy, APIs, and local settings.
+
 The current business loop uses a copied mock snapshot of public grocery products so the response behavior can be tested before connecting a real inventory surface.
 
 ## What It Does
@@ -59,7 +75,12 @@ TWILIO_ADMIN_REVIEW_TO=whatsapp:+573006211340
 Optional:
 
 ```text
-PORT=3000
+WEBHOOK_PORT=3000
+OPERATOR_PORT=3100
+OPERATOR_HOST=127.0.0.1
+OPERATOR_DATABASE_PATH=.runtime/operator-inbox.sqlite
+OPERATOR_MEDIA_PATH=.runtime/media
+OPERATOR_SETTINGS_PATH=.runtime/operator-settings.json
 LOG_LEVEL=debug
 WEBHOOK_EVENT_LOG_PATH=.runtime/webhook-events.jsonl
 INBOUND_IDLE_BUFFER_MS=5000
@@ -174,6 +195,8 @@ Cuanto para Planeta Rica?
 
 ```text
 npm run dev        Start local server in watch mode
+npm run inbox      Build and start both local listeners
+npm run demo:inbox Build, seed, and start the credential-free inbox demo
 npm run tunnel     Start Cloudflare quick tunnel to localhost:3000
 npm run demo       Run local sample messages through the pipeline
 npm run test       Run Vitest suite
@@ -197,7 +220,11 @@ src/delivery      Public Shopify delivery calculator adapter
 src/responses     WhatsApp response composition
 src/guardrails    Response safety checks
 src/notifications Admin review notification composition
-src/sessions      24-hour in-memory sender session context
+src/persistence   SQLite migrations and durable operator repositories
+src/operator      Local runtime and server-sent event hub
+src/media         Authenticated, size-limited received-media storage
+src/settings      Validated hot-reloadable operator settings
+operator-ui       Responsive React/TypeScript operator interface
 src/logging       Console logger and persistent webhook event log
 src/local         Demo and environment check scripts
 ```
