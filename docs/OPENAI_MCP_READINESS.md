@@ -21,11 +21,12 @@ legal-policy review.
 - Contract tests for tool lists, annotations, output schemas, OAuth metadata,
   authentication challenges, scope failures, and representative policy paths.
 
-## Provider-backed messaging boundary
+## Durable state boundary
 
-The MCP transport itself does not need durable conversation state. A future
-send adapter does, because it must enforce facts that survive restarts and
-concurrency:
+OpenAI does not require durable conversation state merely because an endpoint
+uses MCP. Persistence is needed only when a tool's real guarantees depend on
+facts that must survive restarts or concurrent calls. A future WhatsApp send
+path has that requirement because it must enforce:
 
 - canonical tenant, WhatsApp account, sender, and conversation binding;
 - last verified user-inbound timestamp;
@@ -35,10 +36,13 @@ concurrency:
 - policy revision and consumed idempotency keys; and
 - provider message IDs and delivery-status reconciliation.
 
-The adapter must re-read authoritative state and atomically reserve the
-idempotency key immediately before calling Meta. For free-form replies it must
-also reject the reservation when the supplied `notAfter` deadline has passed.
-Only then is `idempotentHint: true` a truthful runtime guarantee.
+The MCP endpoint, OAuth logic, policy engine, provider adapter, and durable
+store may be implemented in the same service and repository. The boundary is
+about responsibility, not process or deployment topology. Immediately before
+calling Meta, the send path must re-read authoritative state and atomically
+reserve the idempotency key. For free-form replies it must also reject the
+reservation when the supplied `notAfter` deadline has passed. Only then is
+`idempotentHint: true` a truthful runtime guarantee.
 
 ## Remaining before deployment
 

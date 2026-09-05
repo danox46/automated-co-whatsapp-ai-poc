@@ -54,13 +54,14 @@ Approved templates remain available outside the 24-hour window when the server c
 
 The provider capability is dependency-injected and absent from the current production entry point. Consequently, no write tools are exposed until durable conversation state, consent/template registries, content validation, idempotent provider dispatch, and OAuth tenant binding are connected.
 
-Durable conversation state is not an MCP protocol requirement and is not
-needed by the policy, status, or action-evaluation tools. It is required only
-by a provider-backed messaging integration: the send boundary must still know
-the last verified inbound-message time, opt-out/handoff state, consent,
-approved templates, policy revision, and consumed idempotency keys after a
-restart or concurrent request. Keep that state in the messaging capability,
-not in the generic MCP transport.
+OpenAI and MCP do not require durable conversation state for every server, and
+the policy, status, and action-evaluation tools do not need it. Persistence is
+needed by the provider-backed send path because its guarantees depend on the
+last verified inbound-message time, opt-out/handoff state, consent, approved
+templates, policy revision, and consumed idempotency keys after a restart or
+concurrent request. Those functions may live inside this MCP service and
+repository; they remain domain responsibilities of the messaging path rather
+than generic MCP session requirements.
 
 ## Meta sandbox webhook
 
