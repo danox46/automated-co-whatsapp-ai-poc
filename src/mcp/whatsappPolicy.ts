@@ -1,3 +1,5 @@
+import { DEFAULT_CONVERSATION_RETENTION_POLICY } from "./retentionPolicy.js";
+
 export const WHATSAPP_POLICY_VERSION = "2026-09-05";
 
 export const WHATSAPP_POLICY_URLS = {
@@ -118,6 +120,13 @@ export const whatsappPublicPolicy = {
   version: WHATSAPP_POLICY_VERSION,
   urls: WHATSAPP_POLICY_URLS,
   mode: "capability-maximizing-policy-enforced",
+  retention: {
+    messageContentDays: DEFAULT_CONVERSATION_RETENTION_POLICY.messageRetentionDays,
+    inactiveConversationDays: DEFAULT_CONVERSATION_RETENTION_POLICY.inactiveConversationRetentionDays,
+    unmatchedDeliveryStatusDays: DEFAULT_CONVERSATION_RETENTION_POLICY.pendingStatusRetentionDays,
+    pruneIntervalHours: DEFAULT_CONVERSATION_RETENTION_POLICY.pruneIntervalHours,
+    optOutSuppression: "while_connection_active_or_until_authenticated_deletion"
+  },
   rules: [
     "Only people who supplied their phone number and opted in for the relevant message purpose may be contacted.",
     "Opt-out and stop requests block future automated messages immediately.",

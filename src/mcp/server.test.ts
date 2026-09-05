@@ -130,6 +130,17 @@ describe("protected WhatsApp MCP handler", () => {
       ]);
     }
 
+    const policy = await client.callTool({ name: "whatsapp_get_policy", arguments: {} });
+    expect(policy.structuredContent).toMatchObject({
+      retention: {
+        messageContentDays: 90,
+        inactiveConversationDays: 365,
+        unmatchedDeliveryStatusDays: 7,
+        pruneIntervalHours: 24,
+        optOutSuppression: "while_connection_active_or_until_authenticated_deletion"
+      }
+    });
+
     const runtimeCheck = await client.callTool({
       name: "whatsapp_evaluate_action",
       arguments: { action: "start_conversation" }

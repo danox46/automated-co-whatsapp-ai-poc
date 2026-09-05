@@ -282,12 +282,12 @@ implements WhatsAppConversationReader, WhatsAppConversationWriter, WhatsAppConve
       }
     }
     for (const conversation of tenant.conversations.values()) {
-      conversation.messageCount = [...tenant.messages.values()]
-        .filter((message) => message.conversationRef === conversation.conversationRef).length;
-      conversation.unreadInboundCount = Math.min(
-        conversation.unreadInboundCount,
-        conversation.messageCount
-      );
+      const retained = [...tenant.messages.values()]
+        .filter((message) => message.conversationRef === conversation.conversationRef);
+      conversation.messageCount = retained.length;
+      conversation.unreadInboundCount = retained.filter(
+        (message) => message.direction === "inbound" && message.status === "received"
+      ).length;
     }
     return removed;
   }

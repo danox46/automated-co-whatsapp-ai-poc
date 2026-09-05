@@ -23,6 +23,10 @@ import {
   type WhatsAppConversationWriter,
   type WhatsAppMessageStatus
 } from "./conversationHistory.js";
+import {
+  validateConversationRetentionPolicy,
+  type ConversationRetentionPolicy
+} from "./retentionPolicy.js";
 
 type ConversationRow = {
   conversation_ref: string;
@@ -59,6 +63,23 @@ type CountRow = { count: number };
 type MetadataRow = { value: string };
 type VersionRow = { version: number };
 
+export type ConversationRetentionResult = {
+  ranAt: string;
+  messageCutoff: string;
+  inactiveConversationCutoff: string;
+  pendingStatusCutoff: string;
+  messagesDeleted: number;
+  conversationsDeleted: number;
+  pendingStatusesDeleted: number;
+  nextRunAt: string;
+};
+
+export type ConversationDeletionResult = {
+  conversationsDeleted: number;
+  messagesDeleted: number;
+  pendingStatusesDeleted: number;
+};
+
 export type DurableConversationObjectStub = {
   initializeTenant(tenantId: string): Promise<void>;
   ingestMessage(message: Omit<InternalConversationMessage, "tenantId">): Promise<void>;
@@ -68,6 +89,10 @@ export type DurableConversationObjectStub = {
   getConversationEnforcementState(
     conversationRef: string
   ): Promise<InternalConversationEnforcementState | null>;
+  configureRetention(policy: ConversationRetentionPolicy, now: string): Promise<void>;
+  runRetention(now: string): Promise<ConversationRetentionResult>;
+  deleteConversationData(conversationRef: string): Promise<ConversationDeletionResult>;
+  deleteAllConversationData(): Promise<ConversationDeletionResult>;
   pruneMessages(occurredBefore: string): Promise<number>;
   listConversations(query: ConversationListQuery): Promise<ConversationListResult>;
   getConversationHistory(query: ConversationHistoryQuery): Promise<ConversationHistoryResult | null>;
@@ -95,6 +120,127 @@ export class WhatsAppConversationDurableObject extends DurableObject {
         tenantId
       );
     }
+  }
+
+  async configureRetention(policy: ConversationRetentionPolicy, now: string): Promise<void> {
+    validateConversationRetentionPolicy(policy);
+    const nowMs = parseCanonicalIso(now, "retention configuration time");
+    this.assertInitialized();
+    const values: Array<[string, string]> = [
+      ["retention_message_days", String(policy.messageRetentionDays)],
+      ["retention_conversation_days", String(policy.inactiveConversationRetentionDays)],
+      ["retention_pending_status_days", String(policy.pendingStatusRetentionDays)],
+      ["retention_interval_hours", String(policy.pruneIntervalHours)]
+    ];
+    for (const [key, value] of values) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO metadata (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        key,
+        value
+      );
+    }
+    const scheduled = await this.ctx.storage.getAlarm();
+    if (scheduled === null) {
+      await this.ctx.storage.setAlarm(nowMs + policy.pruneIntervalHours * 60 * 60 * 1000);
+    }
+  }
+
+  async alarm(): Promise<void> {
+    const policy = this.readRetentionPolicy();
+    if (!policy) return;
+    await this.runRetention(new Date().toISOString());
+  }
+
+  async runRetention(now: string): Promise<ConversationRetentionResult> {
+    const nowMs = parseCanonicalIso(now, "retention run time");
+    this.assertInitialized();
+    const policy = this.readRetentionPolicy();
+    if (!policy) throw new Error("Conversation retention is not configured");
+
+    const messageCutoff = daysBefore(nowMs, policy.messageRetentionDays);
+    const inactiveConversationCutoff = daysBefore(nowMs, policy.inactiveConversationRetentionDays);
+    const pendingStatusCutoff = daysBefore(nowMs, policy.pendingStatusRetentionDays);
+
+    this.ctx.storage.sql.exec("DELETE FROM messages WHERE occurred_at < ?", messageCutoff);
+    const messagesDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
+    this.ctx.storage.sql.exec(
+      "DELETE FROM pending_message_statuses WHERE occurred_at < ?",
+      pendingStatusCutoff
+    );
+    const pendingStatusesDeleted = this.ctx.storage.sql
+      .exec<CountRow>("SELECT changes() AS count").one().count;
+    this.ctx.storage.sql.exec(
+      `UPDATE conversations SET
+         message_count = (
+           SELECT COUNT(*) FROM messages
+           WHERE messages.conversation_ref = conversations.conversation_ref
+         ),
+         unread_inbound_count = (
+           SELECT COUNT(*) FROM messages
+           WHERE messages.conversation_ref = conversations.conversation_ref
+             AND messages.direction = 'inbound'
+             AND messages.status = 'received'
+         )`
+    );
+    this.ctx.storage.sql.exec(
+      `DELETE FROM conversations
+       WHERE last_message_at < ?
+         AND recipient_opted_out = 0
+         AND automation_paused = 0
+         AND NOT EXISTS (
+           SELECT 1 FROM messages
+           WHERE messages.conversation_ref = conversations.conversation_ref
+         )`,
+      inactiveConversationCutoff
+    );
+    const conversationsDeleted = this.ctx.storage.sql
+      .exec<CountRow>("SELECT changes() AS count").one().count;
+
+    const nextRunAt = new Date(nowMs + policy.pruneIntervalHours * 60 * 60 * 1000).toISOString();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO metadata (key, value) VALUES ('retention_last_run_at', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      now
+    );
+    await this.ctx.storage.setAlarm(Date.parse(nextRunAt));
+    return {
+      ranAt: now,
+      messageCutoff,
+      inactiveConversationCutoff,
+      pendingStatusCutoff,
+      messagesDeleted,
+      conversationsDeleted,
+      pendingStatusesDeleted,
+      nextRunAt
+    };
+  }
+
+  async deleteConversationData(conversationRef: string): Promise<ConversationDeletionResult> {
+    if (!conversationRef || conversationRef.length > 200) throw new Error("Invalid conversation reference");
+    this.assertInitialized();
+    this.ctx.storage.sql.exec("DELETE FROM messages WHERE conversation_ref = ?", conversationRef);
+    const messagesDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
+    this.ctx.storage.sql.exec("DELETE FROM conversations WHERE conversation_ref = ?", conversationRef);
+    const conversationsDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
+    return { conversationsDeleted, messagesDeleted, pendingStatusesDeleted: 0 };
+  }
+
+  async deleteAllConversationData(): Promise<ConversationDeletionResult> {
+    this.assertInitialized();
+    const messagesDeleted = this.ctx.storage.sql.exec<CountRow>(
+      "SELECT COUNT(*) AS count FROM messages"
+    ).one().count;
+    const conversationsDeleted = this.ctx.storage.sql.exec<CountRow>(
+      "SELECT COUNT(*) AS count FROM conversations"
+    ).one().count;
+    const pendingStatusesDeleted = this.ctx.storage.sql.exec<CountRow>(
+      "SELECT COUNT(*) AS count FROM pending_message_statuses"
+    ).one().count;
+    this.ctx.storage.sql.exec("DELETE FROM messages");
+    this.ctx.storage.sql.exec("DELETE FROM pending_message_statuses");
+    this.ctx.storage.sql.exec("DELETE FROM conversations");
+    return { conversationsDeleted, messagesDeleted, pendingStatusesDeleted };
   }
 
   async ingestMessage(message: Omit<InternalConversationMessage, "tenantId">): Promise<void> {
@@ -188,7 +334,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   async updateMessageStatus(
     update: Omit<InternalMessageStatusUpdate, "tenantId">
   ): Promise<void> {
-    if (!Number.isFinite(Date.parse(update.occurredAt))) throw new Error("Invalid status timestamp");
+    parseCanonicalIso(update.occurredAt, "status timestamp");
     this.assertInitialized();
     const existing = this.ctx.storage.sql
       .exec<{ status: WhatsAppMessageStatus }>(
@@ -237,7 +383,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   }
 
   async markConversationRead(conversationRef: string, readAt: string): Promise<void> {
-    if (!Number.isFinite(Date.parse(readAt))) throw new Error("Invalid read timestamp");
+    parseCanonicalIso(readAt, "read timestamp");
     this.assertInitialized();
     this.ctx.storage.sql.exec(
       `UPDATE conversations SET
@@ -278,24 +424,47 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   }
 
   async pruneMessages(occurredBefore: string): Promise<number> {
-    if (!Number.isFinite(Date.parse(occurredBefore))) throw new Error("Invalid retention cutoff");
+    parseCanonicalIso(occurredBefore, "retention cutoff");
     this.assertInitialized();
     this.ctx.storage.sql.exec("DELETE FROM messages WHERE occurred_at < ?", occurredBefore);
     const removed = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
     this.ctx.storage.sql.exec(
       `UPDATE conversations SET message_count = (
          SELECT COUNT(*) FROM messages WHERE messages.conversation_ref = conversations.conversation_ref
-       ), unread_inbound_count = MIN(unread_inbound_count, (
+       ), unread_inbound_count = (
          SELECT COUNT(*) FROM messages
          WHERE messages.conversation_ref = conversations.conversation_ref
            AND messages.direction = 'inbound'
-       ))`
+           AND messages.status = 'received'
+       )`
     );
     this.ctx.storage.sql.exec(
       "DELETE FROM pending_message_statuses WHERE occurred_at < ?",
       occurredBefore
     );
     return removed;
+  }
+
+  private readRetentionPolicy(): ConversationRetentionPolicy | null {
+    const rows = this.ctx.storage.sql.exec<{ key: string; value: string }>(
+      "SELECT key, value FROM metadata WHERE key LIKE 'retention_%'"
+    ).toArray();
+    const values = new Map(rows.map((row) => [row.key, row.value]));
+    const required = [
+      "retention_message_days",
+      "retention_conversation_days",
+      "retention_pending_status_days",
+      "retention_interval_hours"
+    ];
+    if (!required.every((key) => values.has(key))) return null;
+    const policy = {
+      messageRetentionDays: Number(values.get("retention_message_days")),
+      inactiveConversationRetentionDays: Number(values.get("retention_conversation_days")),
+      pendingStatusRetentionDays: Number(values.get("retention_pending_status_days")),
+      pruneIntervalHours: Number(values.get("retention_interval_hours"))
+    };
+    validateConversationRetentionPolicy(policy);
+    return policy;
   }
 
   async listConversations(query: ConversationListQuery): Promise<ConversationListResult> {
@@ -443,52 +612,47 @@ export class WhatsAppConversationDurableObject extends DurableObject {
 }
 
 export function createDurableConversationReader(
-  namespace: DurableConversationNamespace
+  namespace: DurableConversationNamespace,
+  retentionPolicy?: ConversationRetentionPolicy
 ): WhatsAppConversationReader {
   return {
     async listConversations(principal, query) {
-      const stub = namespace.getByName(principal.tenantId);
-      await stub.initializeTenant(principal.tenantId);
+      const stub = await initializedStub(namespace, principal.tenantId, retentionPolicy);
       return stub.listConversations(query);
     },
     async getConversationHistory(principal, query) {
-      const stub = namespace.getByName(principal.tenantId);
-      await stub.initializeTenant(principal.tenantId);
+      const stub = await initializedStub(namespace, principal.tenantId, retentionPolicy);
       return stub.getConversationHistory(query);
     }
   };
 }
 
 export function createDurableConversationWriter(
-  namespace: DurableConversationNamespace
+  namespace: DurableConversationNamespace,
+  retentionPolicy?: ConversationRetentionPolicy
 ): WhatsAppConversationWriter {
   return {
     async ingestMessage(message) {
-      const stub = namespace.getByName(message.tenantId);
-      await stub.initializeTenant(message.tenantId);
+      const stub = await initializedStub(namespace, message.tenantId, retentionPolicy);
       const { tenantId: _tenantId, ...record } = message;
       await stub.ingestMessage(record);
     },
     async updateMessageStatus(update) {
-      const stub = namespace.getByName(update.tenantId);
-      await stub.initializeTenant(update.tenantId);
+      const stub = await initializedStub(namespace, update.tenantId, retentionPolicy);
       const { tenantId: _tenantId, ...record } = update;
       await stub.updateMessageStatus(record);
     },
     async updatePolicyState(patch) {
-      const stub = namespace.getByName(patch.tenantId);
-      await stub.initializeTenant(patch.tenantId);
+      const stub = await initializedStub(namespace, patch.tenantId, retentionPolicy);
       const { tenantId: _tenantId, ...record } = patch;
       await stub.updatePolicyState(record);
     },
     async markConversationRead(tenantId, conversationRef, readAt) {
-      const stub = namespace.getByName(tenantId);
-      await stub.initializeTenant(tenantId);
+      const stub = await initializedStub(namespace, tenantId, retentionPolicy);
       await stub.markConversationRead(conversationRef, readAt);
     },
     async pruneMessages(tenantId, occurredBefore) {
-      const stub = namespace.getByName(tenantId);
-      await stub.initializeTenant(tenantId);
+      const stub = await initializedStub(namespace, tenantId, retentionPolicy);
       return stub.pruneMessages(occurredBefore);
     }
   };
@@ -502,6 +666,33 @@ export function createDurableConversationEnforcementReader(
       const stub = namespace.getByName(tenantId);
       await stub.initializeTenant(tenantId);
       return stub.getConversationEnforcementState(conversationRef);
+    }
+  };
+}
+
+export function createDurableConversationRetentionController(
+  namespace: DurableConversationNamespace
+) {
+  return {
+    async configure(tenantId: string, policy: ConversationRetentionPolicy, now = new Date().toISOString()) {
+      const stub = namespace.getByName(tenantId);
+      await stub.initializeTenant(tenantId);
+      await stub.configureRetention(policy, now);
+    },
+    async run(tenantId: string, now = new Date().toISOString()) {
+      const stub = namespace.getByName(tenantId);
+      await stub.initializeTenant(tenantId);
+      return stub.runRetention(now);
+    },
+    async deleteConversation(tenantId: string, conversationRef: string) {
+      const stub = namespace.getByName(tenantId);
+      await stub.initializeTenant(tenantId);
+      return stub.deleteConversationData(conversationRef);
+    },
+    async deleteAllConversationData(tenantId: string) {
+      const stub = namespace.getByName(tenantId);
+      await stub.initializeTenant(tenantId);
+      return stub.deleteAllConversationData();
     }
   };
 }
@@ -542,7 +733,32 @@ function validateMessage(message: Omit<InternalConversationMessage, "tenantId">)
   if (!message.messageRef || message.messageRef.length > 512) throw new Error("Invalid message reference");
   if (!message.conversationRef || message.conversationRef.length > 200) throw new Error("Invalid conversation reference");
   if (message.text && message.text.length > 4096) throw new Error("Message text exceeds storage limit");
-  if (!Number.isFinite(Date.parse(message.occurredAt))) throw new Error("Invalid message timestamp");
+  parseCanonicalIso(message.occurredAt, "message timestamp");
+}
+
+function parseCanonicalIso(value: string, label: string): number {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw new Error(`Invalid ${label}`);
+  }
+  return parsed.getTime();
+}
+
+function daysBefore(nowMs: number, days: number): string {
+  return new Date(nowMs - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+async function initializedStub(
+  namespace: DurableConversationNamespace,
+  tenantId: string,
+  retentionPolicy?: ConversationRetentionPolicy
+): Promise<DurableConversationObjectStub> {
+  const stub = namespace.getByName(tenantId);
+  await stub.initializeTenant(tenantId);
+  if (retentionPolicy) {
+    await stub.configureRetention(retentionPolicy, new Date().toISOString());
+  }
+  return stub;
 }
 
 const statusOrder: Record<WhatsAppMessageStatus, number> = {

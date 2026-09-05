@@ -38,6 +38,10 @@ legal-policy review.
   and revoked token IDs.
 - A reproducible local verification gate covering typecheck, all repository
   tests, and the production TypeScript build from the Windows workspace path.
+- Tenant-local retention with validated 90-day message, 365-day inactive
+  conversation, and 7-day unmatched-status defaults; recurring Durable Object
+  alarms; exact-conversation and full-tenant internal deletion; and accurate
+  post-prune unread/message counts.
 
 ## Durable state boundary
 
@@ -84,6 +88,8 @@ reservation when the supplied `notAfter` deadline has passed. Only then is
   and provider timeouts.
 - Re-scan final deployed metadata and prepare reviewer credentials that do not
   require MFA or private-network access.
+- Connect the internal deletion controller to an authenticated administrative
+  workflow and verify provider-token, backup, and production deletion behavior.
 
 ## Release discipline
 

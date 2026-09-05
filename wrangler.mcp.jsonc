@@ -6,7 +6,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "vars": {
-    "META_TENANT_ID": "local-development"
+    "META_TENANT_ID": "local-development",
+    "CONVERSATION_MESSAGE_RETENTION_DAYS": "90",
+    "CONVERSATION_INACTIVE_RETENTION_DAYS": "365",
+    "CONVERSATION_PENDING_STATUS_RETENTION_DAYS": "7",
+    "CONVERSATION_RETENTION_INTERVAL_HOURS": "24"
   },
   "durable_objects": {
     "bindings": [

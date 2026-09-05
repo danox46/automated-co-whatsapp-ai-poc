@@ -188,6 +188,13 @@ const policyOutputSchema = z.object({
     support: z.string().url()
   }),
   mode: z.literal("capability-maximizing-policy-enforced"),
+  retention: z.object({
+    messageContentDays: z.number().int().positive(),
+    inactiveConversationDays: z.number().int().positive(),
+    unmatchedDeliveryStatusDays: z.number().int().positive(),
+    pruneIntervalHours: z.number().int().positive(),
+    optOutSuppression: z.literal("while_connection_active_or_until_authenticated_deletion")
+  }),
   rules: z.array(z.string()),
   alwaysRegisteredTools: z.array(z.string()),
   conversationStoreBackedTools: z.array(z.string()),

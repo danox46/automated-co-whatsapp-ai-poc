@@ -4,6 +4,7 @@ import {
   WhatsAppConversationDurableObject,
   type DurableConversationNamespace
 } from "./durableConversationStore.js";
+import { conversationRetentionPolicyFromEnv } from "./retentionPolicy.js";
 import {
   createProtectedWhatsAppMcpHandler,
   type CreateWhatsAppMcpHandlerOptions
@@ -19,6 +20,10 @@ export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & {
   CONVERSATIONS: DurableConversationNamespace;
   META_TENANT_ID: string;
   CONVERSATION_REF_SECRET: string;
+  CONVERSATION_MESSAGE_RETENTION_DAYS?: string;
+  CONVERSATION_INACTIVE_RETENTION_DAYS?: string;
+  CONVERSATION_PENDING_STATUS_RETENTION_DAYS?: string;
+  CONVERSATION_RETENTION_INTERVAL_HOURS?: string;
 };
 
 export type PersistentWhatsAppWorkerOptions = Pick<
@@ -33,7 +38,8 @@ export function createPersistentWhatsAppWorker(
 ) {
   return {
     async fetch(request: Request, env: PersistentWhatsAppWorkerEnv): Promise<Response> {
-      const writer = createDurableConversationWriter(env.CONVERSATIONS);
+      const retentionPolicy = conversationRetentionPolicyFromEnv(env);
+      const writer = createDurableConversationWriter(env.CONVERSATIONS, retentionPolicy);
       const webhookResponse = await handleMetaWhatsAppWebhook(request, env, {
         tenantId: env.META_TENANT_ID,
         conversationRefSecret: env.CONVERSATION_REF_SECRET,
@@ -46,6 +52,7 @@ export function createPersistentWhatsAppWorker(
           ok: true,
           conversationPersistence: "durable-object-sqlite",
           rawWebhookPayloadRetention: false,
+          retention: retentionPolicy,
           conversationReadTools: true,
           oauthVerifierConfigured: Boolean(options.verifyToken),
           outboundMessagingConfigured: Boolean(options.messaging)
@@ -60,7 +67,7 @@ export function createPersistentWhatsAppWorker(
       const handler = createProtectedWhatsAppMcpHandler({
         resource: RESOURCE,
         authorizationServer: RESOURCE,
-        conversationReader: createDurableConversationReader(env.CONVERSATIONS),
+        conversationReader: createDurableConversationReader(env.CONVERSATIONS, retentionPolicy),
         getConnectionStatus: async () => ({
           provider: "meta_whatsapp_cloud_api",
           environment: "development",
@@ -78,3 +85,4 @@ export function createPersistentWhatsAppWorker(
 // OAuth remains deny-all when no verifier is injected. This prevents a local
 // persistence build from accidentally becoming a public data endpoint.
 export default createPersistentWhatsAppWorker();
+export { conversationRetentionPolicyFromEnv };

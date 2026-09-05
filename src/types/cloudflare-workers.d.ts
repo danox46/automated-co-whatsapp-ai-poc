@@ -14,7 +14,12 @@ declare module "cloudflare:workers" {
   }
 
   export interface DurableObjectState {
-    storage: { sql: SqlStorage };
+    storage: {
+      sql: SqlStorage;
+      getAlarm(): Promise<number | null>;
+      setAlarm(scheduledTime: number | Date): Promise<void>;
+      deleteAlarm(): Promise<void>;
+    };
     blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
   }
 
