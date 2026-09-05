@@ -6,8 +6,12 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "dev:mcp": "tsx watch src/server.ts",
+    "dev:legacy:twilio": "tsx watch src/legacy/twilioServer.ts",
     "tunnel": "cloudflared tunnel --url http://localhost:3000",
     "start": "node dist/server.js",
+    "start:mcp": "node dist/server.js",
+    "start:legacy:twilio": "node dist/legacy/twilioServer.js",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",

@@ -2,8 +2,10 @@
 
 This repository contains two deliberately separated surfaces:
 
-- a legacy reactive WhatsApp grocery-advisor POC using Twilio; and
-- a policy-enforced Streamable HTTP MCP server plus an isolated signed Meta WhatsApp webhook.
+- the default policy-enforced Streamable HTTP MCP server plus an isolated signed Meta WhatsApp webhook; and
+- a legacy reactive WhatsApp grocery-advisor POC using Twilio.
+
+`npm run dev` and `npm start` now select the internal MCP. Twilio is never an automatic fallback: it starts only through `npm run dev:legacy:twilio`, `npm run start:legacy:twilio`, or an explicit `WHATSAPP_PROVIDER=legacy_twilio` setting. This preserves compatibility without making new work Twilio-first.
 
 The Twilio advisor remains inbound-only and read-only: it answers product availability and delivery guidance questions, but it does not create orders, update Shopify, write to CRM, open tickets, send campaigns, or initiate proactive messages.
 
@@ -13,9 +15,19 @@ Local persistent Worker configuration is in `wrangler.mcp.jsonc`. It is prepared
 
 The current business loop uses a copied mock snapshot of public grocery products so the response behavior can be tested before connecting a real inventory surface.
 
-## What It Does
+## Default Internal MCP Runtime
 
-- Receives inbound WhatsApp webhooks from Twilio
+The default local runtime exposes:
+
+- `GET /health` with an honest capability summary;
+- `GET /.well-known/oauth-protected-resource` for MCP authorization discovery; and
+- the Streamable HTTP MCP endpoint at `/mcp`.
+
+It remains fail-closed locally: OAuth verification, durable conversation history, and provider-backed messaging are reported as disconnected. The Cloudflare Worker in `src/mcp/persistentWorker.ts` is the production-oriented persistence lane being improved separately.
+
+## Legacy Twilio Advisor
+
+- Receives inbound WhatsApp webhooks from Twilio only when the legacy runtime is explicitly selected
 - Normalizes Twilio messages into an internal message shape
 - Classifies simple delivery and availability requests
 - Extracts product, package size, quantity, department, and city signals
@@ -50,13 +62,21 @@ The source of truth for mocked inventory behavior is [src/inventory/providers/mo
 
 ## Environment
 
-Copy the example file and fill the Twilio values:
+Copy the example file:
 
 ```bash
 cp .env.example .env
 ```
 
-Required for live WhatsApp replies:
+The default is:
+
+```text
+WHATSAPP_PROVIDER=internal_mcp
+WHATSAPP_MCP_RESOURCE_URL=http://localhost:3000
+WHATSAPP_MCP_AUTHORIZATION_SERVER=https://auth.automatedandco.danienremoto.com
+```
+
+Twilio credentials are required only for the explicit legacy runtime:
 
 ```text
 TWILIO_ACCOUNT_SID=
@@ -95,6 +115,8 @@ npm run verify
 npm run dev
 ```
 
+This starts the internal MCP. It does not send a WhatsApp message or silently switch to Twilio.
+
 Health check:
 
 ```bash
@@ -129,12 +151,12 @@ npm run agent:codex
 
 Tune local Codex response behavior in [prompts/local-codex-agent.md](./prompts/local-codex-agent.md). That prompt contains the read-only rules, disclosure policy, human handoff rules, and response style guidance.
 
-## Local Twilio Tunnel
+## Legacy Twilio Runtime And Tunnel
 
-Start the app in one terminal:
+Start the legacy app explicitly in one terminal:
 
 ```bash
-npm run dev
+npm run dev:legacy:twilio
 ```
 
 Start a public Cloudflare quick tunnel in a second terminal:
@@ -159,12 +181,12 @@ For a new Codex instance or clean machine:
 2. Install Node.js 20 or newer.
 3. Run `npm install`.
 4. Create `.env` from `.env.example`.
-5. Add Twilio Account SID, Auth Token, and WhatsApp sender.
+5. Keep `WHATSAPP_PROVIDER=internal_mcp` for new work.
 6. Run `npm run check:env`.
 7. Run `npm run verify`.
-8. Start the bot with `npm run dev`.
-9. Start a tunnel with `npm run tunnel` if testing locally with Twilio.
-10. Configure the Twilio WhatsApp webhook URL.
+8. Start the internal MCP with `npm run dev`.
+9. Only for a legacy compatibility test, add Twilio credentials and run `npm run dev:legacy:twilio`.
+10. Start `npm run tunnel` and configure the Twilio webhook only for that explicit legacy test.
 
 For a complete new-account checklist, use [docs/CODEX_TWILIO_ACCOUNT_SETUP.md](./docs/CODEX_TWILIO_ACCOUNT_SETUP.md).
 
@@ -182,16 +204,20 @@ Cuanto para Planeta Rica?
 ## Scripts
 
 ```text
-npm run dev        Start local server in watch mode
-npm run tunnel     Start Cloudflare quick tunnel to localhost:3000
-npm run demo       Run local sample messages through the pipeline
-npm run test       Run Vitest suite
-npm run typecheck  Run TypeScript checks
-npm run build      Clean and compile to dist
-npm run verify     Typecheck, test, and build
-npm run check:env  Validate required Twilio env vars
-npm run agent:mock Mock local agent CLI contract implementation
-npm run agent:codex Local Codex CLI agent bridge
+npm run dev                   Start the default internal MCP in watch mode
+npm run dev:mcp               Explicit alias for the default MCP runtime
+npm run dev:legacy:twilio     Start the legacy Twilio runtime in watch mode
+npm run start                 Start the compiled default internal MCP
+npm run start:legacy:twilio   Start the compiled legacy Twilio runtime
+npm run tunnel                Start Cloudflare quick tunnel to localhost:3000
+npm run demo                  Run local sample messages through the legacy advisor pipeline
+npm run test                  Run Vitest suite
+npm run typecheck             Run TypeScript checks
+npm run build                 Clean and compile to dist
+npm run verify                Typecheck, test, and build
+npm run check:env             Validate the selected runtime's required env vars
+npm run agent:mock            Mock local agent CLI contract implementation
+npm run agent:codex           Local Codex CLI agent bridge
 ```
 
 ## Architecture
@@ -211,6 +237,7 @@ src/logging       Console logger and persistent webhook event log
 src/local         Demo and environment check scripts
 src/mcp           MCP tools, tenant-scoped conversation storage, and policy enforcement
 src/meta          Signed Meta webhook and normalized event ingestion
+src/legacy        Explicit compatibility entrypoints; never selected silently
 ```
 
 ## Persistent Webhook Logs

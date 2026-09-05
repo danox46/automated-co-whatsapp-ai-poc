@@ -2,7 +2,13 @@
 
 This POC is intentionally small. Keep future changes inside the existing boundaries unless a real requirement forces a new layer.
 
-## Request Flow
+## Runtime Selection
+
+The internal Streamable HTTP MCP is the executable default. `npm run dev` and `npm start` expose the internal MCP health, protected-resource discovery, and `/mcp` routes. The default local process stays fail-closed until OAuth, durable state, and the trusted Meta messaging capability are connected.
+
+Twilio is retained as a legacy compatibility lane. It runs only when `WHATSAPP_PROVIDER=legacy_twilio` is explicit or through the dedicated `dev:legacy:twilio` / `start:legacy:twilio` scripts. An MCP failure must surface as an MCP failure; it must not silently switch a conversation to Twilio.
+
+## Legacy Twilio Request Flow
 
 ```text
 Twilio WhatsApp webhook

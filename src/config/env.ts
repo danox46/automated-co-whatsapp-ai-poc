@@ -3,6 +3,9 @@ import { z } from "zod";
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
+  WHATSAPP_PROVIDER: z.enum(["internal_mcp", "legacy_twilio"]).default("internal_mcp"),
+  WHATSAPP_MCP_RESOURCE_URL: z.string().url().optional(),
+  WHATSAPP_MCP_AUTHORIZATION_SERVER: z.string().url().default("https://auth.automatedandco.danienremoto.com"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   WEBHOOK_EVENT_LOG_PATH: z.string().default(".runtime/webhook-events.jsonl"),
   INBOUND_IDLE_BUFFER_MS: z.coerce.number().int().nonnegative().default(5000),
@@ -20,12 +23,17 @@ const envSchema = z.object({
 
 export type AppConfig = ReturnType<typeof loadConfig>;
 
-export function loadConfig() {
-  const env = envSchema.parse(process.env);
+export function loadConfig(source: NodeJS.ProcessEnv = process.env) {
+  const env = envSchema.parse(source);
 
   return {
     nodeEnv: env.NODE_ENV,
     port: env.PORT,
+    whatsappProvider: env.WHATSAPP_PROVIDER,
+    mcp: {
+      resource: env.WHATSAPP_MCP_RESOURCE_URL ?? `http://localhost:${env.PORT}`,
+      authorizationServer: env.WHATSAPP_MCP_AUTHORIZATION_SERVER
+    },
     logLevel: env.LOG_LEVEL,
     webhookEventLog: {
       path: env.WEBHOOK_EVENT_LOG_PATH
@@ -57,16 +65,18 @@ export function loadConfig() {
 export function validateRuntimeConfig(config: AppConfig) {
   const missing: string[] = [];
 
-  if (!config.twilio.accountSid) {
-    missing.push("TWILIO_ACCOUNT_SID");
-  }
+  if (config.whatsappProvider === "legacy_twilio") {
+    if (!config.twilio.accountSid) {
+      missing.push("TWILIO_ACCOUNT_SID");
+    }
 
-  if (!config.twilio.authToken) {
-    missing.push("TWILIO_AUTH_TOKEN");
-  }
+    if (!config.twilio.authToken) {
+      missing.push("TWILIO_AUTH_TOKEN");
+    }
 
-  if (!config.twilio.whatsappFrom) {
-    missing.push("TWILIO_WHATSAPP_FROM");
+    if (!config.twilio.whatsappFrom) {
+      missing.push("TWILIO_WHATSAPP_FROM");
+    }
   }
 
   if (config.agent.mode === "local_cli" && !config.agent.command) {
