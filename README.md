@@ -2,6 +2,8 @@
 
 Reactive WhatsApp assistant POC using Twilio. The bot is inbound-only and read-only: it answers product availability and delivery guidance questions, but it does not create orders, update Shopify, write to CRM, open tickets, send campaigns, or initiate proactive messages.
 
+The repository also includes a protected Streamable HTTP MCP policy surface. It registers policy/status tools only and denies all WhatsApp write actions until a separate, reviewed release supplies audience-bound OAuth verification and server-side consent evidence. See [docs/WHATSAPP_MCP_POLICY.md](./docs/WHATSAPP_MCP_POLICY.md).
+
 The current business loop uses a copied mock snapshot of public grocery products so the response behavior can be tested before connecting a real inventory surface.
 
 ## What It Does
