@@ -9,16 +9,23 @@ import {
   authorizeWhatsAppMcpRequest,
   denyAllTokenVerifier,
   REQUIRED_WHATSAPP_MCP_SCOPES,
+  SUPPORTED_WHATSAPP_MCP_SCOPES,
   type WhatsAppMcpPrincipal,
   type WhatsAppMcpTokenVerifier
 } from "./auth.js";
+import {
+  dispatchApprovedTemplate,
+  dispatchFreeFormReply,
+  type WhatsAppMessagingCapability,
+  type WhatsAppOutboundResult
+} from "./outboundPolicy.js";
 
 export type WhatsAppConnectionStatus = {
   provider: "meta_whatsapp_cloud_api";
   environment: "not-configured" | "development" | "production";
   connected: boolean;
   appMode: "not-created" | "development" | "live";
-  writeToolsRegistered: false;
+  writeToolsRegistered: boolean;
 };
 
 export type CreateWhatsAppMcpHandlerOptions = {
@@ -26,6 +33,7 @@ export type CreateWhatsAppMcpHandlerOptions = {
   authorizationServer: string;
   verifyToken?: WhatsAppMcpTokenVerifier;
   getConnectionStatus?: (principal: WhatsAppMcpPrincipal) => Promise<WhatsAppConnectionStatus>;
+  messaging?: WhatsAppMessagingCapability;
 };
 
 const actionSchema = z.enum([
@@ -47,9 +55,18 @@ function textResult(value: unknown) {
   };
 }
 
+function outboundResult(value: WhatsAppOutboundResult) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    structuredContent: value,
+    ...(value.ok ? {} : { isError: true as const })
+  };
+}
+
 function createWhatsAppPolicyServer(
   principal: WhatsAppMcpPrincipal,
-  getConnectionStatus: NonNullable<CreateWhatsAppMcpHandlerOptions["getConnectionStatus"]>
+  getConnectionStatus: NonNullable<CreateWhatsAppMcpHandlerOptions["getConnectionStatus"]>,
+  messaging?: WhatsAppMessagingCapability
 ) {
   const server = new McpServer({
     name: "automated-co-whatsapp-policy",
@@ -65,6 +82,50 @@ function createWhatsAppPolicyServer(
     },
     async () => textResult(whatsappPublicPolicy)
   );
+
+  if (messaging) {
+    const conversationRef = z.string().trim().min(1).max(200);
+    const idempotencyKey = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
+
+    server.registerTool(
+      "whatsapp_reply_to_inbound",
+      {
+        title: "Reply to a WhatsApp customer",
+        description: "Sends a free-form reply only while the server-verified 24-hour customer-service window is open. A closed window returns a protective error that directs the caller to an approved template.",
+        inputSchema: z.strictObject({
+          conversationRef,
+          text: z.string().trim().min(1).max(4096),
+          idempotencyKey
+        }),
+        annotations: {
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true
+        }
+      },
+      async (input) => outboundResult(await dispatchFreeFormReply(messaging, principal, input))
+    );
+
+    server.registerTool(
+      "whatsapp_send_template",
+      {
+        title: "Send an approved WhatsApp template",
+        description: "Starts or reopens a conversation using a server-verified approved template for a recipient-consented category.",
+        inputSchema: z.strictObject({
+          conversationRef,
+          templateName: z.string().trim().min(1).max(512).regex(/^[a-z0-9_]+$/),
+          variables: z.array(z.string().max(1024)).max(20).default([]),
+          idempotencyKey
+        }),
+        annotations: {
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true
+        }
+      },
+      async (input) => outboundResult(await dispatchApprovedTemplate(messaging, principal, input))
+    );
+  }
 
   server.registerTool(
     "whatsapp_get_connection_status",
@@ -96,7 +157,7 @@ export function createProtectedWhatsAppMcpHandler(options: CreateWhatsAppMcpHand
     environment: "not-configured" as const,
     connected: false,
     appMode: "not-created" as const,
-    writeToolsRegistered: false as const
+    writeToolsRegistered: Boolean(options.messaging)
   }));
 
   return {
@@ -106,7 +167,7 @@ export function createProtectedWhatsAppMcpHandler(options: CreateWhatsAppMcpHand
         return Response.json({
           resource: options.resource,
           authorization_servers: [options.authorizationServer],
-          scopes_supported: [...REQUIRED_WHATSAPP_MCP_SCOPES],
+          scopes_supported: [...SUPPORTED_WHATSAPP_MCP_SCOPES],
           bearer_methods_supported: ["header"]
         }, {
           headers: {
@@ -140,7 +201,7 @@ export function createProtectedWhatsAppMcpHandler(options: CreateWhatsAppMcpHand
         });
       }
 
-      const handler = createMcpHandler(() => createWhatsAppPolicyServer(principal, getConnectionStatus));
+      const handler = createMcpHandler(() => createWhatsAppPolicyServer(principal, getConnectionStatus, options.messaging));
       return handler.fetch(request);
     }
   };

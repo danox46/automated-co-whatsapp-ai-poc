@@ -2,24 +2,45 @@ import { describe, expect, it } from "vitest";
 import {
   assertAllowedWhatsAppMcpTool,
   evaluateWhatsAppMcpAction,
+  WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
   WHATSAPP_MCP_TOOL_ALLOWLIST,
+  WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST,
   WHATSAPP_MCP_WRITE_ACTIONS
 } from "./whatsappPolicy.js";
 
 describe("WhatsApp MCP policy", () => {
-  it("registers only read-only policy and status tools", () => {
-    expect(WHATSAPP_MCP_TOOL_ALLOWLIST).toEqual([
+  it("defines read tools and provider-backed messaging tools separately", () => {
+    expect(WHATSAPP_MCP_READ_TOOL_ALLOWLIST).toEqual([
       "whatsapp_get_policy",
       "whatsapp_get_connection_status",
       "whatsapp_evaluate_action"
     ]);
-    expect(WHATSAPP_MCP_TOOL_ALLOWLIST.some((name) => /send|delete|webhook|export/i.test(name))).toBe(false);
+    expect(WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST).toEqual([
+      "whatsapp_reply_to_inbound",
+      "whatsapp_send_template"
+    ]);
+    expect(WHATSAPP_MCP_TOOL_ALLOWLIST).toEqual([
+      ...WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
+      ...WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST
+    ]);
   });
 
-  it.each(WHATSAPP_MCP_WRITE_ACTIONS)("denies write action %s", (action) => {
+  it.each(["reply_to_inbound", "start_conversation", "send_template"] as const)(
+    "requires server-owned runtime policy state for messaging action %s",
+    (action) => {
+      const result = evaluateWhatsAppMcpAction(action);
+      expect(result.allowed).toBeNull();
+      expect(result.status).toBe("runtime_check_required");
+      expect(result.requiredNextStep).toContain("dedicated reply or approved-template tool");
+    }
+  );
+
+  it.each(WHATSAPP_MCP_WRITE_ACTIONS.filter(
+    (action) => !["reply_to_inbound", "start_conversation", "send_template"].includes(action)
+  ))("blocks unattended administrative action %s", (action) => {
     const result = evaluateWhatsAppMcpAction(action);
     expect(result.allowed).toBe(false);
-    expect(result.requiredNextStep).toContain("owner review");
+    expect(result.status).toBe("blocked");
   });
 
   it("allows only read-only policy checks", () => {

@@ -15,6 +15,11 @@ export const REQUIRED_WHATSAPP_MCP_SCOPES = [
   "whatsapp.connection.read"
 ] as const;
 
+export const SUPPORTED_WHATSAPP_MCP_SCOPES = [
+  ...REQUIRED_WHATSAPP_MCP_SCOPES,
+  "whatsapp.messages.send"
+] as const;
+
 export function readBearerToken(request: Request): string | null {
   const authorization = request.headers.get("Authorization");
   if (!authorization) return null;
