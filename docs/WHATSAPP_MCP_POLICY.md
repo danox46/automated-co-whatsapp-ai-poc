@@ -31,3 +31,25 @@ There is no send, template mutation, webhook mutation, export, or deletion tool.
 8. The final action is rate-limited, idempotent, audited without raw credentials, and subject to explicit owner confirmation.
 
 The current release deliberately stops before item 8: no write tool is registered.
+
+## Meta sandbox webhook
+
+The dedicated Cloudflare sandbox Worker exposes `GET` and `POST`
+`/webhooks/meta/whatsapp` for the unpublished Meta sandbox:
+
+- verification succeeds only when Meta supplies the encrypted verification token;
+- every event request must carry a valid `X-Hub-Signature-256` generated with
+  the Meta app secret;
+- request bodies larger than 256 KiB, malformed JSON, and non-WhatsApp Business
+  Account envelopes are rejected;
+- valid events are acknowledged without storing, logging, forwarding, or
+  returning their payloads;
+- the webhook cannot send messages and does not change the MCP tool allowlist.
+
+The webhook Worker and the MCP handler are deliberately separate deployments.
+The webhook has no provider-token binding or outbound messaging code, while the
+MCP production handler remains deny-all until its OAuth verifier is implemented.
+
+`META_WEBHOOK_VERIFY_TOKEN` and `META_APP_SECRET` are declared as required
+Worker secrets. Their values must never appear in source, `.dev.vars`, dashboard
+state, command output, or test fixtures.

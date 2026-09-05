@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "automated-co-whatsapp-sandbox",
+  "main": "dist/meta/webhook.js",
+  "no_bundle": true,
+  "compatibility_date": "2026-09-05",
+  "workers_dev": true,
+  "secrets": {
+    "required": [
+      "META_WEBHOOK_VERIFY_TOKEN",
+      "META_APP_SECRET"
+    ]
+  }
+}
