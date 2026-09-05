@@ -144,6 +144,53 @@ describe("protected WhatsApp MCP handler", () => {
     await client.close();
   });
 
+  it("advertises top-level per-tool OAuth security schemes on the raw wire response", async () => {
+    const handler = createAuthorizedHandler(closedWindowMessaging(), new InMemoryWhatsAppConversationStore());
+    const advertisedTools = new Map<string, unknown>();
+    const client = new Client({ name: "wire-metadata-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer valid-test-token" } },
+      fetch: async (url, init) => {
+        const response = await handler.fetch(new Request(url, init));
+        const contentType = response.headers.get("content-type") ?? "";
+        const payloads: Array<{
+          result?: { tools?: Array<{ name: string; securitySchemes?: unknown }> };
+        }> = [];
+        if (contentType.includes("application/json")) {
+          payloads.push(await response.clone().json() as {
+            result?: { tools?: Array<{ name: string; securitySchemes?: unknown }> };
+          });
+        } else if (contentType.includes("text/event-stream")) {
+          for (const line of (await response.clone().text()).split(/\r?\n/)) {
+            if (!line.startsWith("data:")) continue;
+            payloads.push(JSON.parse(line.slice(5).trim()) as {
+              result?: { tools?: Array<{ name: string; securitySchemes?: unknown }> };
+            });
+          }
+        }
+        for (const payload of payloads) {
+          for (const tool of payload.result?.tools ?? []) {
+            advertisedTools.set(tool.name, tool.securitySchemes);
+          }
+        }
+        return response;
+      }
+    });
+
+    await client.connect(transport);
+    await client.listTools();
+    expect(Object.fromEntries(advertisedTools)).toEqual({
+      whatsapp_evaluate_action: [{ type: "oauth2", scopes: ["whatsapp.policy.read"] }],
+      whatsapp_get_connection_status: [{ type: "oauth2", scopes: ["whatsapp.connection.read"] }],
+      whatsapp_get_conversation_history: [{ type: "oauth2", scopes: ["whatsapp.conversations.read"] }],
+      whatsapp_get_policy: [{ type: "oauth2", scopes: ["whatsapp.policy.read"] }],
+      whatsapp_list_conversations: [{ type: "oauth2", scopes: ["whatsapp.conversations.read"] }],
+      whatsapp_reply_to_inbound: [{ type: "oauth2", scopes: ["whatsapp.messages.send"] }],
+      whatsapp_send_template: [{ type: "oauth2", scopes: ["whatsapp.messages.send"] }]
+    });
+    await client.close();
+  });
+
   it("returns an actionable insufficient-scope challenge without running the tool", async () => {
     const handler = createAuthorizedHandler();
     const client = new Client({ name: "scope-test", version: "1.0.0" });

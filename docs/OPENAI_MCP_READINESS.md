@@ -12,7 +12,8 @@ legal-policy review.
 - Structured content plus concise text content for every successful result.
 - Explicit `readOnlyHint`, `openWorldHint`, and `destructiveHint` values.
 - Messaging tools marked as external, state-changing, and irreversible.
-- Per-tool OAuth scope metadata and actionable `mcp/www_authenticate` errors.
+- Matching top-level and compatibility OAuth security schemes for every tool,
+  plus actionable `mcp/www_authenticate` errors.
 - Protected-resource metadata with documentation, privacy, and terms links.
 - Header-only bearer tokens; query-string tokens are rejected.
 - Audience checking and tool-level scope checking.
@@ -28,6 +29,15 @@ legal-policy review.
   sharded one object per authenticated tenant.
 - Signed Meta webhook normalization into bounded message records; internal
   ingestion and policy-state mutation are not exposed as MCP tools.
+- An OAuth 2.1 authorization-server core with discovery, an exact-redirect
+  authorization-code flow, PKCE S256, RFC 8707 resource binding, issuer
+  identification, signed RS256 access and ID tokens, rotating refresh tokens,
+  revocation, and verified-email user info.
+- A resource-server JWT verifier that rejects invalid signatures, keys,
+  issuers, audiences, expiry/not-before/issued-at values, missing tenant claims,
+  and revoked token IDs.
+- A reproducible local verification gate covering typecheck, all repository
+  tests, and the production TypeScript build from the Windows workspace path.
 
 ## Durable state boundary
 
@@ -54,9 +64,10 @@ reservation when the supplied `notAfter` deadline has passed. Only then is
 
 ## Remaining before deployment
 
-- Implement authorization-server discovery, authorization-code flow with PKCE
-  S256, supported client registration, issuer identification, resource
-  propagation, refresh/revocation handling, and production token verification.
+- Wire the tested OAuth core to durable authorization storage, the real signed-in
+  account and consent UI, production signing-key rotation, and the Worker route.
+  Keep client-metadata discovery disabled unless an actual validated resolver is
+  configured; the current local registry is deliberately preconfigured/static.
 - Bind every authenticated subject to an allowed tenant and Meta installation.
 - Extend the implemented conversation store with consent/template registries,
   durable idempotency reservations, and the Meta Cloud API send adapter.

@@ -3,8 +3,10 @@ import { orchestrateInboundMessage } from "./orchestrator.js";
 import type { InboundMessage } from "../messages/types.js";
 import { MockInventoryProvider } from "../inventory/providers/mockInventoryProvider.js";
 import { LocalCliDecisionProvider } from "./localCliDecisionProvider.js";
+import { DeterministicDecisionProvider } from "./deterministicDecisionProvider.js";
 import type { AgentDecisionProvider } from "./decisionTypes.js";
 import type { ConversationContext } from "../sessions/conversationSessionStore.js";
+import type { DeliveryGuidanceRequest } from "../delivery/deliveryGuidance.js";
 
 describe("orchestrateInboundMessage", () => {
   it("runs the mocked grocery availability pipeline and returns a trace", async () => {
@@ -105,7 +107,11 @@ describe("orchestrateInboundMessage", () => {
   });
 
   it("runs the mocked delivery pipeline and returns an estimate caveat", async () => {
-    const result = await orchestrateInboundMessage(message("Cuanto tarda el envio a Bogota?"));
+    const result = await orchestrateInboundMessage(message("Cuanto tarda el envio a Bogota?"), {
+      inventoryProvider: new MockInventoryProvider(),
+      decisionProvider: new DeterministicDecisionProvider(),
+      deliveryGuidanceProvider: fixedDeliveryGuidance
+    });
 
     expect(result.shouldSend).toBe(true);
     expect(result.trace.intent).toBe("delivery_guidance");
@@ -114,7 +120,11 @@ describe("orchestrateInboundMessage", () => {
   });
 
   it("recognizes natural delivery price wording before escalating", async () => {
-    const result = await orchestrateInboundMessage(message("Cuanto para planeta Rica?"));
+    const result = await orchestrateInboundMessage(message("Cuanto para planeta Rica?"), {
+      inventoryProvider: new MockInventoryProvider(),
+      decisionProvider: new DeterministicDecisionProvider(),
+      deliveryGuidanceProvider: fixedDeliveryGuidance
+    });
 
     expect(result.shouldSend).toBe(true);
     expect(result.routeToHuman).toBe(false);
@@ -133,9 +143,10 @@ describe("orchestrateInboundMessage", () => {
     const result = await orchestrateInboundMessage(message("Bogota"), {
       inventoryProvider: new MockInventoryProvider(),
       decisionProvider: new LocalCliDecisionProvider({
-        command: "npm run -s agent:mock",
+        command: "node ./node_modules/tsx/dist/cli.mjs src/local/mockAgentCli.ts",
         timeoutMs: 30000
       }),
+      deliveryGuidanceProvider: fixedDeliveryGuidance,
       conversation: conversationWithPendingDelivery()
     });
 
@@ -152,9 +163,10 @@ describe("orchestrateInboundMessage", () => {
     const result = await orchestrateInboundMessage(message("Córdoba, planeta Rica"), {
       inventoryProvider: new MockInventoryProvider(),
       decisionProvider: new LocalCliDecisionProvider({
-        command: "npm run -s agent:mock",
+        command: "node ./node_modules/tsx/dist/cli.mjs src/local/mockAgentCli.ts",
         timeoutMs: 30000
       }),
+      deliveryGuidanceProvider: fixedDeliveryGuidance,
       conversation: conversationWithPendingDelivery()
     });
 
@@ -175,7 +187,7 @@ describe("orchestrateInboundMessage", () => {
     const result = await orchestrateInboundMessage(message("Que presentaciones de Riko Malt ofrecen?"), {
       inventoryProvider: new MockInventoryProvider(),
       decisionProvider: new LocalCliDecisionProvider({
-        command: "npm run -s agent:mock",
+        command: "node ./node_modules/tsx/dist/cli.mjs src/local/mockAgentCli.ts",
         timeoutMs: 30000
       })
     });
@@ -185,6 +197,25 @@ describe("orchestrateInboundMessage", () => {
     expect(result.responseText).toContain("botella 500ml");
   });
 });
+
+async function fixedDeliveryGuidance(request: DeliveryGuidanceRequest) {
+  const isPlanetaRica = request.cityText?.toLowerCase().includes("planeta rica") ?? false;
+  return {
+    source: "public_shopify_delivery_calculator" as const,
+    sourceUrl: "https://example.test/delivery-calculator",
+    department: isPlanetaRica ? "Córdoba" : "Bogota D.C.",
+    city: isPlanetaRica ? "Planeta Rica" : "Bogota",
+    zone: isPlanetaRica ? "national" : "bogota",
+    priceCop: isPlanetaRica ? 28000 : 12000,
+    estimatedDelivery: isPlanetaRica ? "2 días hábiles" : "Llega hoy a toda Bogota",
+    summary: isPlanetaRica
+      ? "Para Planeta Rica, Córdoba, el domicilio aparece en $28.000 COP y la entrega estimada es 2 días hábiles."
+      : "Para Bogota, el domicilio aparece en $12.000 COP y la entrega estimada es hoy.",
+    caveats: ["Es una estimacion del calculador de domicilio, no una promesa exacta."],
+    needsDepartment: false,
+    needsCity: false
+  };
+}
 
 function message(body: string): InboundMessage {
   return {

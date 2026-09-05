@@ -37,9 +37,91 @@ type OAuth2SecurityScheme = {
   scopes: string[];
 };
 
+const TOOL_OAUTH_SCOPES: Readonly<Record<string, readonly string[]>> = {
+  whatsapp_get_policy: [POLICY_READ_SCOPE],
+  whatsapp_get_connection_status: [CONNECTION_READ_SCOPE],
+  whatsapp_evaluate_action: [POLICY_READ_SCOPE],
+  whatsapp_list_conversations: [CONVERSATION_READ_SCOPE],
+  whatsapp_get_conversation_history: [CONVERSATION_READ_SCOPE],
+  whatsapp_reply_to_inbound: [MESSAGE_SEND_SCOPE],
+  whatsapp_send_template: [MESSAGE_SEND_SCOPE]
+};
+
+function oauthSecuritySchemes(scopes: readonly string[]): OAuth2SecurityScheme[] {
+  return [{ type: "oauth2", scopes: [...scopes] }];
+}
+
 function oauthSecurityMetadata(scopes: readonly string[]) {
-  const securitySchemes: OAuth2SecurityScheme[] = [{ type: "oauth2", scopes: [...scopes] }];
+  const securitySchemes = oauthSecuritySchemes(scopes);
   return { securitySchemes };
+}
+
+function addTopLevelToolSecuritySchemes(payload: unknown): boolean {
+  const messages = Array.isArray(payload) ? payload : [payload];
+  let changed = false;
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    const result = (message as { result?: unknown }).result;
+    if (!result || typeof result !== "object") continue;
+    const tools = (result as { tools?: unknown }).tools;
+    if (!Array.isArray(tools)) continue;
+
+    for (const tool of tools) {
+      if (!tool || typeof tool !== "object") continue;
+      const namedTool = tool as { name?: unknown; securitySchemes?: OAuth2SecurityScheme[] };
+      if (typeof namedTool.name !== "string") continue;
+      const scopes = TOOL_OAUTH_SCOPES[namedTool.name];
+      if (!scopes) continue;
+      namedTool.securitySchemes = oauthSecuritySchemes(scopes);
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function replacedResponse(response: Response, body: string): Response {
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+async function advertiseTopLevelToolSecuritySchemes(response: Response): Promise<Response> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    let payload: unknown;
+    try {
+      payload = await response.clone().json();
+    } catch {
+      return response;
+    }
+
+    return addTopLevelToolSecuritySchemes(payload)
+      ? replacedResponse(response, JSON.stringify(payload))
+      : response;
+  }
+
+  if (!contentType.includes("text/event-stream")) return response;
+  const originalBody = await response.clone().text();
+  let changed = false;
+  const updatedBody = originalBody.split(/(?<=\n)/).map((line) => {
+    const match = /^(data:\s*)(.*?)(\r?\n)?$/.exec(line);
+    if (!match) return line;
+    try {
+      const payload = JSON.parse(match[2]) as unknown;
+      if (!addTopLevelToolSecuritySchemes(payload)) return line;
+      changed = true;
+      return `${match[1]}${JSON.stringify(payload)}${match[3] ?? ""}`;
+    } catch {
+      return line;
+    }
+  }).join("");
+
+  return changed ? replacedResponse(response, updatedBody) : response;
 }
 
 function isValidCursor(value: string): boolean {
@@ -534,7 +616,7 @@ export function createProtectedWhatsAppMcpHandler(options: CreateWhatsAppMcpHand
         options.conversationReader,
         options.messaging
       ));
-      return handler.fetch(request);
+      return advertiseTopLevelToolSecuritySchemes(await handler.fetch(request));
     }
   };
 }

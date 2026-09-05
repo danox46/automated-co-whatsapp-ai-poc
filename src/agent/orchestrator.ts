@@ -1,5 +1,9 @@
 import type { InboundMessage } from "../messages/types.js";
-import { getDeliveryGuidance, type DeliveryGuidance } from "../delivery/deliveryGuidance.js";
+import {
+  getDeliveryGuidance,
+  type DeliveryGuidance,
+  type DeliveryGuidanceRequest
+} from "../delivery/deliveryGuidance.js";
 import { applyResponseGuardrails, type GuardrailResult } from "../guardrails/responseGuardrails.js";
 import type {
   InventoryAvailability,
@@ -37,6 +41,7 @@ export type ProcessingTrace = {
 export type OrchestratorDependencies = {
   inventoryProvider: InventoryProvider;
   decisionProvider: AgentDecisionProvider;
+  deliveryGuidanceProvider?: (request: DeliveryGuidanceRequest) => Promise<DeliveryGuidance>;
   conversation?: ConversationContext;
 };
 
@@ -64,7 +69,9 @@ export async function orchestrateInboundMessage(
       : [];
   const deliveryGuidance =
     resolvedIntent === "delivery_guidance"
-      ? await getDeliveryGuidance(buildDeliveryGuidanceRequest(message.body, extracted))
+      ? await (dependencies.deliveryGuidanceProvider ?? getDeliveryGuidance)(
+          buildDeliveryGuidanceRequest(message.body, extracted)
+        )
       : undefined;
   const agentDecision = await dependencies.decisionProvider.decide({
     message,
