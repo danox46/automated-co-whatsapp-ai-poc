@@ -5,6 +5,7 @@ import {
   META_WHATSAPP_WEBHOOK_PATH,
   type MetaWebhookEnv
 } from "./webhook.js";
+import { InMemoryWhatsAppConversationStore } from "../mcp/conversationHistory.js";
 
 const origin = "https://automated-co-whatsapp-sandbox.example.workers.dev";
 const env: MetaWebhookEnv = {
@@ -61,6 +62,111 @@ describe("Meta WhatsApp webhook", () => {
     const responseText = await response?.text();
     expect(responseText).toBe('{"received":true}');
     expect(responseText).not.toContain("private");
+  });
+
+  it("persists only normalized bounded conversation records after signature verification", async () => {
+    const store = new InMemoryWhatsAppConversationStore(
+      () => new Date("2026-09-05T12:00:00.000Z")
+    );
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{
+        changes: [{
+          field: "messages",
+          value: {
+            metadata: { phone_number_id: "provider-account-123" },
+            contacts: [{ wa_id: "recipient-456", profile: { name: "Customer" } }],
+            messages: [{
+              from: "recipient-456",
+              id: "wamid.inbound-1",
+              timestamp: "1788606000",
+              type: "text",
+              text: { body: "Where is my order?" },
+              raw_secret_field: "must-not-be-stored"
+            }]
+          }
+        }]
+      }]
+    });
+    const response = await handleMetaWhatsAppWebhook(new Request(
+      new URL(META_WHATSAPP_WEBHOOK_PATH, origin),
+      {
+        method: "POST",
+        headers: { "x-hub-signature-256": sign(body) },
+        body
+      }
+    ), env, {
+      tenantId: "tenant-1",
+      conversationRefSecret: "fixed-conversation-reference-secret",
+      writer: store
+    });
+
+    expect(response?.status).toBe(200);
+    const list = await store.listConversations({
+      subject: "owner",
+      tenantId: "tenant-1",
+      audience: origin,
+      scopes: new Set(["whatsapp.conversations.read"])
+    }, {});
+    expect(list.conversations).toHaveLength(1);
+    expect(list.conversations[0].conversationRef).toMatch(/^conv_[A-Za-z0-9_-]{32}$/);
+    const history = await store.getConversationHistory({
+      subject: "owner",
+      tenantId: "tenant-1",
+      audience: origin,
+      scopes: new Set(["whatsapp.conversations.read"])
+    }, { conversationRef: list.conversations[0].conversationRef });
+    expect(history?.messages).toEqual([
+      expect.objectContaining({
+        messageRef: "wamid.inbound-1",
+        text: "Where is my order?",
+        direction: "inbound"
+      })
+    ]);
+    expect(JSON.stringify(history)).not.toContain("provider-account-123");
+    expect(JSON.stringify(history)).not.toContain("recipient-456");
+    expect(JSON.stringify(history)).not.toContain("must-not-be-stored");
+  });
+
+  it("returns a retryable error instead of acknowledging a configured persistence failure", async () => {
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{ changes: [{
+        field: "messages",
+        value: {
+          metadata: { phone_number_id: "provider-account" },
+          messages: [{
+            from: "recipient",
+            id: "wamid.retry-me",
+            timestamp: "1788606000",
+            type: "text",
+            text: { body: "private retry content" }
+          }]
+        }
+      }] }]
+    });
+    const fail = async () => { throw new Error("storage unavailable"); };
+    const response = await handleMetaWhatsAppWebhook(new Request(
+      new URL(META_WHATSAPP_WEBHOOK_PATH, origin),
+      {
+        method: "POST",
+        headers: { "x-hub-signature-256": sign(body) },
+        body
+      }
+    ), env, {
+      tenantId: "tenant-1",
+      conversationRefSecret: "fixed-conversation-reference-secret",
+      writer: {
+        ingestMessage: fail,
+        updateMessageStatus: fail,
+        updatePolicyState: fail,
+        markConversationRead: fail,
+        pruneMessages: fail
+      }
+    });
+
+    expect(response?.status).toBe(503);
+    expect(await response?.text()).toBe('{"received":false,"retryable":true}');
   });
 
   it("rejects unsigned, incorrectly signed, malformed, and non-WhatsApp events", async () => {

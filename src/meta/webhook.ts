@@ -82,7 +82,11 @@ async function handleVerification(request: Request, env: MetaWebhookEnv): Promis
   return new Response(challenge, { status: 200, headers: noStoreHeaders() });
 }
 
-async function handleEvent(request: Request, env: MetaWebhookEnv): Promise<Response> {
+async function handleEvent(
+  request: Request,
+  env: MetaWebhookEnv,
+  persistence?: MetaConversationPersistence
+): Promise<Response> {
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > MAX_WEBHOOK_BODY_BYTES) {
     return new Response("Payload too large", { status: 413, headers: noStoreHeaders() });
@@ -117,9 +121,20 @@ async function handleEvent(request: Request, env: MetaWebhookEnv): Promise<Respo
     return new Response("Unsupported event", { status: 400, headers: noStoreHeaders() });
   }
 
-  // This sandbox receiver deliberately performs no persistence, forwarding,
-  // message processing, or outbound action. A valid signed event is acknowledged
-  // only after its envelope has been minimally validated.
+  if (persistence) {
+    try {
+      await persistMetaConversationEvents(payload, persistence);
+    } catch {
+      return Response.json(
+        { received: false, retryable: true },
+        { status: 503, headers: noStoreHeaders("application/json; charset=utf-8") }
+      );
+    }
+  }
+
+  // Raw provider payloads are never retained or echoed. When persistence is
+  // configured, only normalized bounded records are stored after signature and
+  // envelope validation succeeds.
   return Response.json(
     { received: true },
     { status: 200, headers: noStoreHeaders("application/json; charset=utf-8") }
@@ -128,13 +143,14 @@ async function handleEvent(request: Request, env: MetaWebhookEnv): Promise<Respo
 
 export async function handleMetaWhatsAppWebhook(
   request: Request,
-  env: MetaWebhookEnv
+  env: MetaWebhookEnv,
+  persistence?: MetaConversationPersistence
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== META_WHATSAPP_WEBHOOK_PATH) return null;
 
   if (request.method === "GET") return handleVerification(request, env);
-  if (request.method === "POST") return handleEvent(request, env);
+  if (request.method === "POST") return handleEvent(request, env, persistence);
 
   return new Response("Method not allowed", {
     status: 405,
@@ -165,3 +181,7 @@ export default {
     return new Response("Not found", { status: 404, headers: noStoreHeaders() });
   }
 };
+import {
+  persistMetaConversationEvents,
+  type MetaConversationPersistence
+} from "./conversationEvents.js";

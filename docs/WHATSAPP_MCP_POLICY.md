@@ -18,6 +18,18 @@ test doubles must advertise `false`.
 - `whatsapp_get_connection_status`: returns sanitized readiness only.
 - `whatsapp_evaluate_action`: explains whether an action is read-only, administratively blocked, or requires server-owned runtime policy checks.
 
+When the tenant-scoped conversation reader is configured, the server also registers:
+
+- `whatsapp_list_conversations`: returns bounded structured conversation summaries.
+- `whatsapp_get_conversation_history`: returns bounded normalized messages and the policy state for one opaque conversation reference.
+
+Both conversation tools require `whatsapp.conversations.read`. The authenticated
+principal supplies the tenant; callers cannot select another tenant. Message
+content appears only in `structuredContent`, while the required MCP text part
+contains a generic result notice. Raw webhook payloads, provider account IDs,
+recipient IDs, arbitrary queries, state updates, and policy overrides are never
+exposed to connected agents.
+
 When the authenticated Meta messaging capability is configured, the server also registers:
 
 - `whatsapp_reply_to_inbound`: sends a free-form reply only inside the server-verified 24-hour customer-service window.
@@ -32,6 +44,7 @@ Unknown tool names and path-like aliases are rejected. Bulk messaging, template 
 - Tokens in URLs are rejected.
 - The verifier must validate the MCP server audience and the exact read scopes.
 - Messaging tools additionally require `whatsapp.messages.send`; read-only clients do not need this scope.
+- Conversation tools require `whatsapp.conversations.read`; it does not grant messaging or internal state mutation.
 - The production worker uses a deny-all verifier until the OAuth broker supplies an audience-bound verifier.
 - Provider tokens are separate from MCP tokens and may not be passed through.
 
@@ -73,15 +86,20 @@ The dedicated Cloudflare sandbox Worker exposes `GET` and `POST`
   the Meta app secret;
 - request bodies larger than 256 KiB, malformed JSON, and non-WhatsApp Business
   Account envelopes are rejected;
-- valid events are acknowledged without storing, logging, forwarding, or
-  returning their payloads;
+- without a persistence dependency, valid events are acknowledged without
+  storing, logging, forwarding, or returning their payloads;
+- the local persistent Worker can instead normalize signed events into bounded
+  tenant-scoped records, while never retaining or echoing the raw payload;
 - the webhook cannot send messages and does not change the MCP tool allowlist.
 
-The webhook Worker and the MCP handler are deliberately separate deployments.
-The webhook has no provider-token binding or outbound messaging code. The MCP
-production entry point remains inaccessible until its OAuth verifier and the
-server-side Meta messaging capability are implemented.
+The existing deployed sandbox webhook remains a separate acknowledgement-only
+Worker. A local, undeployed combined Worker is prepared in
+`wrangler.mcp.jsonc`; it co-locates signed webhook ingestion, one SQLite Durable
+Object per tenant, and the read-only MCP tools. Its MCP calls remain deny-all
+until an audience-bound OAuth verifier is injected, and it has no provider-token
+binding or outbound messaging code.
 
-`META_WEBHOOK_VERIFY_TOKEN` and `META_APP_SECRET` are declared as required
-Worker secrets. Their values must never appear in source, `.dev.vars`, dashboard
-state, command output, or test fixtures.
+`META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, and
+`CONVERSATION_REF_SECRET` are Worker secrets. Their values must never appear in
+source, dashboard state, command output, or committed fixtures. Local secret
+files must remain ignored and machine-local.

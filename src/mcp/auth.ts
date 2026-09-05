@@ -1,5 +1,6 @@
 export type WhatsAppMcpPrincipal = {
   subject: string;
+  tenantId: string;
   audience: string;
   scopes: ReadonlySet<string>;
   tokenId?: string;
@@ -17,6 +18,7 @@ export const REQUIRED_WHATSAPP_MCP_SCOPES = [
 
 export const SUPPORTED_WHATSAPP_MCP_SCOPES = [
   ...REQUIRED_WHATSAPP_MCP_SCOPES,
+  "whatsapp.conversations.read",
   "whatsapp.messages.send"
 ] as const;
 
@@ -45,7 +47,12 @@ export function authorizeWhatsAppMcpRequest(
     if (!token) return null;
 
     const principal = await verifier(token, request);
-    if (!principal || principal.audience !== expectedAudience) return null;
+    if (
+      !principal ||
+      principal.audience !== expectedAudience ||
+      !principal.subject.trim() ||
+      !principal.tenantId.trim()
+    ) return null;
 
     return principal;
   };

@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "Automated & CO WhatsApp",
     "subtitle": "Policy-safe WhatsApp",
-    "description": "Connects an authorized WhatsApp Business account so users can inspect connection and policy status, reply inside the verified customer-service window, and send approved templates for consented purposes.",
+    "description": "Connects an authorized WhatsApp Business account so users can inspect connection and policy status, review structured tenant-scoped conversation history, reply inside the verified customer-service window, and send approved templates for consented purposes.",
     "category": "BUSINESS"
   },
   "tools": {
@@ -30,6 +30,30 @@
         "read_only_justification": "Retrieves sanitized connection readiness without modifying the Meta installation.",
         "open_world_justification": "Only reads private connection state and does not affect external recipients.",
         "destructive_justification": "Cannot disconnect, reconfigure, or otherwise change the account."
+      }
+    },
+    "whatsapp_list_conversations": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns a bounded page of normalized conversation summaries for the authenticated tenant without updating messages or policy state.",
+        "open_world_justification": "Reads private tenant data and does not contact recipients or modify an external system.",
+        "destructive_justification": "Cannot send, delete, acknowledge, export, or alter any conversation."
+      }
+    },
+    "whatsapp_get_conversation_history": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns normalized messages and policy state for one tenant-owned opaque conversation reference without marking it read or changing it.",
+        "open_world_justification": "Only reads the app's private conversation store and does not communicate with WhatsApp or another recipient.",
+        "destructive_justification": "Cannot send, delete, overwrite, acknowledge, or mutate conversation history or enforcement state."
       }
     },
     "whatsapp_evaluate_action": {
@@ -71,11 +95,11 @@
   },
   "test_cases": [
     {
-      "description": "Read the policy enforced by the WhatsApp integration.",
-      "user_prompt": "Show me the rules this WhatsApp connection enforces.",
+      "description": "List recent tenant-scoped WhatsApp conversations.",
+      "user_prompt": "Show my latest WhatsApp conversations that may need attention.",
       "file_attachment_urls": null,
-      "tools_triggered": "whatsapp_get_policy",
-      "expected_output": "Returns the policy version, public policy URLs, enforced rules, and available tool classes.",
+      "tools_triggered": "whatsapp_list_conversations",
+      "expected_output": "Returns bounded structured conversation summaries with opaque references, activity timestamps, unread counts, and policy status for the authenticated tenant only.",
       "expected_output_url": null
     },
     {
@@ -87,11 +111,11 @@
       "expected_output_url": null
     },
     {
-      "description": "Evaluate whether a conversation-start action needs runtime checks.",
-      "user_prompt": "Can this connection start a new WhatsApp conversation?",
+      "description": "Read normalized history for one conversation.",
+      "user_prompt": "Show the recent messages and service-window status for conversation conv_example.",
       "file_attachment_urls": null,
-      "tools_triggered": "whatsapp_evaluate_action",
-      "expected_output": "Explains that messaging requires server-owned conversation, consent, template, and service-window checks without sending anything.",
+      "tools_triggered": "whatsapp_get_conversation_history",
+      "expected_output": "Returns a bounded structured page of normalized messages and current policy state without raw webhook payloads or provider identifiers.",
       "expected_output_url": null
     },
     {

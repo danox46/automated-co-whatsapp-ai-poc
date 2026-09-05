@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertAllowedWhatsAppMcpTool,
   evaluateWhatsAppMcpAction,
+  WHATSAPP_MCP_CONVERSATION_READ_TOOL_ALLOWLIST,
   WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
   WHATSAPP_MCP_TOOL_ALLOWLIST,
   WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST,
@@ -15,12 +16,17 @@ describe("WhatsApp MCP policy", () => {
       "whatsapp_get_connection_status",
       "whatsapp_evaluate_action"
     ]);
+    expect(WHATSAPP_MCP_CONVERSATION_READ_TOOL_ALLOWLIST).toEqual([
+      "whatsapp_list_conversations",
+      "whatsapp_get_conversation_history"
+    ]);
     expect(WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST).toEqual([
       "whatsapp_reply_to_inbound",
       "whatsapp_send_template"
     ]);
     expect(WHATSAPP_MCP_TOOL_ALLOWLIST).toEqual([
       ...WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
+      ...WHATSAPP_MCP_CONVERSATION_READ_TOOL_ALLOWLIST,
       ...WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST
     ]);
   });
@@ -46,6 +52,8 @@ describe("WhatsApp MCP policy", () => {
   it("allows only read-only policy checks", () => {
     expect(evaluateWhatsAppMcpAction("read_policy").allowed).toBe(true);
     expect(evaluateWhatsAppMcpAction("read_connection_status").allowed).toBe(true);
+    expect(evaluateWhatsAppMcpAction("read_conversations").allowed).toBe(true);
+    expect(evaluateWhatsAppMcpAction("read_conversation_history").allowed).toBe(true);
   });
 
   it("rejects unknown and path-like tool names", () => {

@@ -2,10 +2,17 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { describe, expect, it } from "vitest";
 import { createProtectedWhatsAppMcpHandler } from "./server.js";
 import type { WhatsAppMessagingCapability } from "./outboundPolicy.js";
+import {
+  InMemoryWhatsAppConversationStore,
+  type WhatsAppConversationReader
+} from "./conversationHistory.js";
 
 const resource = "https://auth.automatedandco.danienremoto.com";
 
-function createAuthorizedHandler(messaging?: WhatsAppMessagingCapability) {
+function createAuthorizedHandler(
+  messaging?: WhatsAppMessagingCapability,
+  conversationReader?: WhatsAppConversationReader
+) {
   return createProtectedWhatsAppMcpHandler({
     resource,
     authorizationServer: resource,
@@ -13,20 +20,23 @@ function createAuthorizedHandler(messaging?: WhatsAppMessagingCapability) {
       if (token === "valid-test-token") {
         return {
           subject: "test-owner",
+          tenantId: "tenant_1",
           audience: resource,
-          scopes: new Set(["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.messages.send"])
+          scopes: new Set(["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.conversations.read", "whatsapp.messages.send"])
         };
       }
       if (token === "policy-only-token") {
         return {
           subject: "test-owner",
+          tenantId: "tenant_1",
           audience: resource,
           scopes: new Set(["whatsapp.policy.read"])
         };
       }
       return null;
     },
-    messaging
+    messaging,
+    conversationReader
   });
 }
 
@@ -57,7 +67,7 @@ describe("protected WhatsApp MCP handler", () => {
     expect(await response.json()).toEqual({
       resource,
       authorization_servers: [resource],
-      scopes_supported: ["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.messages.send"],
+      scopes_supported: ["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.conversations.read", "whatsapp.messages.send"],
       bearer_methods_supported: ["header"],
       resource_documentation: "https://automatedandco.danienremoto.com/mcp/whatsapp/",
       resource_policy_uri: "https://automatedandco.danienremoto.com/mcp/whatsapp/privacidad/",
@@ -152,6 +162,92 @@ describe("protected WhatsApp MCP handler", () => {
       expect.stringContaining("whatsapp.connection.read")
     ]);
     await client.close();
+  });
+
+  it("exposes tenant-scoped conversation history only through structured read results", async () => {
+    const store = new InMemoryWhatsAppConversationStore(
+      () => new Date("2026-09-05T12:00:00.000Z")
+    );
+    await store.ingestMessage({
+      tenantId: "tenant_1",
+      providerAccountRef: "internal-account",
+      providerParticipantRef: "internal-recipient",
+      conversationRef: "conv_safe_reference",
+      messageRef: "message_1",
+      direction: "inbound",
+      kind: "text",
+      text: "Private customer question",
+      occurredAt: "2026-09-05T11:00:00.000Z",
+      status: "received"
+    });
+    await store.ingestMessage({
+      tenantId: "different_tenant",
+      providerAccountRef: "other-account",
+      providerParticipantRef: "other-recipient",
+      conversationRef: "conv_other_tenant",
+      messageRef: "message_other",
+      direction: "inbound",
+      kind: "text",
+      text: "Must remain isolated",
+      occurredAt: "2026-09-05T11:30:00.000Z",
+      status: "received"
+    });
+
+    const handler = createAuthorizedHandler(undefined, store);
+    const client = new Client({ name: "history-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer valid-test-token" } },
+      fetch: (url, init) => handler.fetch(new Request(url, init))
+    });
+    await client.connect(transport);
+
+    const tools = await client.listTools();
+    for (const toolName of ["whatsapp_list_conversations", "whatsapp_get_conversation_history"]) {
+      const tool = tools.tools.find((candidate) => candidate.name === toolName);
+      expect(tool?.annotations).toMatchObject({
+        readOnlyHint: true,
+        openWorldHint: false,
+        destructiveHint: false
+      });
+      expect(tool?.outputSchema).toBeDefined();
+      expect(tool?._meta?.securitySchemes).toEqual([
+        { type: "oauth2", scopes: ["whatsapp.conversations.read"] }
+      ]);
+    }
+
+    const list = await client.callTool({ name: "whatsapp_list_conversations", arguments: {} });
+    expect((list.content[0] as { text: string }).text).not.toContain("Private customer question");
+    expect(list.structuredContent).toMatchObject({
+      conversations: [{ conversationRef: "conv_safe_reference" }]
+    });
+    expect(JSON.stringify(list.structuredContent)).not.toContain("conv_other_tenant");
+
+    const history = await client.callTool({
+      name: "whatsapp_get_conversation_history",
+      arguments: { conversationRef: "conv_safe_reference" }
+    });
+    expect((history.content[0] as { text: string }).text).not.toContain("Private customer question");
+    expect(history.structuredContent).toMatchObject({
+      found: true,
+      messages: [{ messageRef: "message_1", text: "Private customer question" }]
+    });
+    await client.close();
+
+    const underScopedClient = new Client({ name: "history-scope-test", version: "1.0.0" });
+    const underScopedTransport = new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer policy-only-token" } },
+      fetch: (url, init) => handler.fetch(new Request(url, init))
+    });
+    await underScopedClient.connect(underScopedTransport);
+    const blocked = await underScopedClient.callTool({
+      name: "whatsapp_list_conversations",
+      arguments: {}
+    });
+    expect(blocked.isError).toBe(true);
+    expect(blocked._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining("whatsapp.conversations.read")
+    ]);
+    await underScopedClient.close();
   });
 
   it("registers provider-backed reply and approved-template tools when messaging is configured", async () => {

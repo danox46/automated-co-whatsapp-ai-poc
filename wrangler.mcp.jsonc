@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "automated-co-whatsapp-mcp",
+  "main": "src/mcp/persistentWorker.ts",
+  "compatibility_date": "2026-09-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "META_TENANT_ID": "local-development"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONVERSATIONS",
+        "class_name": "WhatsAppConversationDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "conversation-history-v1",
+      "new_sqlite_classes": ["WhatsAppConversationDurableObject"]
+    }
+  ]
+}

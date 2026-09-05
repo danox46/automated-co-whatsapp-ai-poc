@@ -1,8 +1,8 @@
 {
   "name": "automated-co-whatsapp-ai-poc",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Policy-enforced WhatsApp MCP server with isolated Meta webhook and legacy Twilio advisor POC.",
+  "description": "Policy-enforced WhatsApp MCP server with durable structured conversation history, signed Meta webhook, and legacy Twilio advisor POC.",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",

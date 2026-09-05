@@ -12,6 +12,7 @@ import {
 const inboundAt = "2026-09-04T12:00:00.000Z";
 const sendPrincipal: WhatsAppMcpPrincipal = {
   subject: "owner",
+  tenantId: "tenant_1",
   audience: "https://auth.example.test",
   scopes: new Set(["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.messages.send"])
 };

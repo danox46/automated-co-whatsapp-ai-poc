@@ -20,9 +20,16 @@ import {
   type WhatsAppMessagingCapability,
   type WhatsAppOutboundResult
 } from "./outboundPolicy.js";
+import {
+  decodeCursor,
+  MAX_CONVERSATION_PAGE_SIZE,
+  MAX_MESSAGE_PAGE_SIZE,
+  type WhatsAppConversationReader
+} from "./conversationHistory.js";
 
 const POLICY_READ_SCOPE = "whatsapp.policy.read";
 const CONNECTION_READ_SCOPE = "whatsapp.connection.read";
+const CONVERSATION_READ_SCOPE = "whatsapp.conversations.read";
 const MESSAGE_SEND_SCOPE = "whatsapp.messages.send";
 
 type OAuth2SecurityScheme = {
@@ -33,6 +40,20 @@ type OAuth2SecurityScheme = {
 function oauthSecurityMetadata(scopes: readonly string[]) {
   const securitySchemes: OAuth2SecurityScheme[] = [{ type: "oauth2", scopes: [...scopes] }];
   return { securitySchemes };
+}
+
+function isValidCursor(value: string): boolean {
+  try {
+    decodeCursor(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalIsoTimestamp(value: string): boolean {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 export type WhatsAppConnectionStatus = {
@@ -48,12 +69,15 @@ export type CreateWhatsAppMcpHandlerOptions = {
   authorizationServer: string;
   verifyToken?: WhatsAppMcpTokenVerifier;
   getConnectionStatus?: (principal: WhatsAppMcpPrincipal) => Promise<WhatsAppConnectionStatus>;
+  conversationReader?: WhatsAppConversationReader;
   messaging?: WhatsAppMessagingCapability;
 };
 
 const actionSchema = z.enum([
   "read_policy",
   "read_connection_status",
+  "read_conversations",
+  "read_conversation_history",
   "reply_to_inbound",
   "start_conversation",
   "send_template",
@@ -84,6 +108,7 @@ const policyOutputSchema = z.object({
   mode: z.literal("capability-maximizing-policy-enforced"),
   rules: z.array(z.string()),
   alwaysRegisteredTools: z.array(z.string()),
+  conversationStoreBackedTools: z.array(z.string()),
   providerBackedTools: z.array(z.string()),
   runtimePolicyActions: z.array(z.string()),
   administrativeActionsNotExposed: z.array(z.string())
@@ -122,9 +147,73 @@ const outboundOutputSchema = z.discriminatedUnion("ok", [
   })
 ]);
 
+const customerServiceWindowSchema = z.object({
+  status: z.enum(["open", "closed", "unavailable"]),
+  closesAt: z.string().optional()
+});
+
+const conversationSummarySchema = z.object({
+  conversationRef: z.string(),
+  displayName: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  lastMessageAt: z.string(),
+  lastVerifiedUserInboundAt: z.string().optional(),
+  lastOutboundAt: z.string().optional(),
+  messageCount: z.number().int().nonnegative(),
+  unreadInboundCount: z.number().int().nonnegative(),
+  recipientOptedOut: z.boolean(),
+  automationPaused: z.boolean(),
+  policyRevision: z.string(),
+  customerServiceWindow: customerServiceWindowSchema
+});
+
+const conversationMessageSchema = z.object({
+  messageRef: z.string(),
+  conversationRef: z.string(),
+  direction: z.enum(["inbound", "outbound"]),
+  kind: z.enum([
+    "text", "template", "interactive", "image", "audio", "video",
+    "document", "location", "contact", "sticker", "reaction", "unknown"
+  ]),
+  text: z.string().optional(),
+  templateName: z.string().optional(),
+  occurredAt: z.string(),
+  status: z.enum(["received", "accepted", "sent", "delivered", "read", "failed"])
+});
+
+const conversationListOutputSchema = z.object({
+  conversations: z.array(conversationSummarySchema),
+  nextCursor: z.string().optional()
+});
+
+const conversationHistoryOutputSchema = z.discriminatedUnion("found", [
+  z.object({
+    found: z.literal(true),
+    conversation: conversationSummarySchema,
+    messages: z.array(conversationMessageSchema),
+    nextCursor: z.string().optional()
+  }),
+  z.object({
+    found: z.literal(false),
+    conversationRef: z.string(),
+    error: z.object({
+      code: z.literal("WHATSAPP_CONVERSATION_NOT_FOUND"),
+      message: z.string()
+    })
+  })
+]);
+
 function textResult<T extends Record<string, unknown>>(value: T) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    structuredContent: value
+  };
+}
+
+function structuredOnlyResult<T extends Record<string, unknown>>(value: T, message: string) {
+  return {
+    content: [{ type: "text" as const, text: message }],
     structuredContent: value
   };
 }
@@ -184,17 +273,100 @@ function createWhatsAppPolicyServer(
   principal: WhatsAppMcpPrincipal | null,
   resource: string,
   getConnectionStatus: NonNullable<CreateWhatsAppMcpHandlerOptions["getConnectionStatus"]>,
+  conversationReader?: WhatsAppConversationReader,
   messaging?: WhatsAppMessagingCapability
 ) {
   const server = new McpServer(
     {
       name: "automated-co-whatsapp-policy",
-      version: "0.2.0"
+      version: "0.3.0"
     },
     {
-      instructions: "Use connection status before messaging when readiness is unknown. Free-form replies require a server-verified 24-hour customer-service window. If it is closed, use only an approved template for a consented purpose. Never invent recipients, consent, timestamps, sender identity, or template approval."
+      instructions: "Use connection status before messaging when readiness is unknown. Conversation tools return tenant-scoped structured records only; never infer records outside their result. Free-form replies require a server-verified 24-hour customer-service window. If it is closed, use only an approved template for a consented purpose. Never invent recipients, consent, timestamps, sender identity, or template approval."
     }
   );
+
+  if (conversationReader) {
+    const cursor = z.string()
+      .max(2048)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .refine(isValidCursor, "Invalid opaque cursor")
+      .optional();
+
+    server.registerTool(
+      "whatsapp_list_conversations",
+      {
+        title: "List WhatsApp conversations",
+        description: "Lists a bounded page of sanitized WhatsApp conversation summaries for the authenticated tenant. Returns structured data only and cannot modify messages or policy state.",
+        inputSchema: z.strictObject({
+          limit: z.number().int().min(1).max(MAX_CONVERSATION_PAGE_SIZE).default(20),
+          cursor,
+          updatedAfter: z.string()
+            .refine(isCanonicalIsoTimestamp, "Expected a canonical UTC ISO timestamp")
+            .optional()
+        }),
+        outputSchema: conversationListOutputSchema,
+        annotations: {
+          readOnlyHint: true,
+          openWorldHint: false,
+          destructiveHint: false
+        },
+        _meta: oauthSecurityMetadata([CONVERSATION_READ_SCOPE])
+      },
+      async (input) => {
+        const authError = toolAuthorizationError(principal, resource, [CONVERSATION_READ_SCOPE]);
+        if (authError) return authError;
+        const result = await conversationReader.listConversations(
+          principal as WhatsAppMcpPrincipal,
+          input
+        );
+        return structuredOnlyResult(result, "Structured conversation summaries are available in structuredContent.");
+      }
+    );
+
+    server.registerTool(
+      "whatsapp_get_conversation_history",
+      {
+        title: "Read WhatsApp conversation history",
+        description: "Returns a bounded page of normalized message history and enforced policy state for one opaque conversation reference owned by the authenticated tenant. It never returns raw webhook payloads or changes state.",
+        inputSchema: z.strictObject({
+          conversationRef: z.string().trim().min(1).max(200),
+          limit: z.number().int().min(1).max(MAX_MESSAGE_PAGE_SIZE).default(50),
+          cursor
+        }),
+        outputSchema: conversationHistoryOutputSchema,
+        annotations: {
+          readOnlyHint: true,
+          openWorldHint: false,
+          destructiveHint: false
+        },
+        _meta: oauthSecurityMetadata([CONVERSATION_READ_SCOPE])
+      },
+      async (input) => {
+        const authError = toolAuthorizationError(principal, resource, [CONVERSATION_READ_SCOPE]);
+        if (authError) return authError;
+        const result = await conversationReader.getConversationHistory(
+          principal as WhatsAppMcpPrincipal,
+          input
+        );
+        if (!result) {
+          const notFound = {
+            found: false as const,
+            conversationRef: input.conversationRef,
+            error: {
+              code: "WHATSAPP_CONVERSATION_NOT_FOUND" as const,
+              message: "No conversation with that reference exists in the authenticated tenant."
+            }
+          };
+          return { ...structuredOnlyResult(notFound, notFound.error.message), isError: true as const };
+        }
+        return structuredOnlyResult(
+          { found: true as const, ...result },
+          "Structured conversation history is available in structuredContent."
+        );
+      }
+    );
+  }
 
   server.registerTool(
     "whatsapp_get_policy",
@@ -359,6 +531,7 @@ export function createProtectedWhatsAppMcpHandler(options: CreateWhatsAppMcpHand
         principal,
         options.resource,
         getConnectionStatus,
+        options.conversationReader,
         options.messaging
       ));
       return handler.fetch(request);

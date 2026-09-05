@@ -7,7 +7,9 @@ This repository contains two deliberately separated surfaces:
 
 The Twilio advisor remains inbound-only and read-only: it answers product availability and delivery guidance questions, but it does not create orders, update Shopify, write to CRM, open tickets, send campaigns, or initiate proactive messages.
 
-The MCP surface advertises explicit OpenAI-compatible tool annotations, structured output schemas, per-tool OAuth scopes, and actionable authentication challenges. Provider-backed reply and approved-template tools are registered only when a trusted messaging capability is supplied. The default worker remains deny-all until a production OAuth verifier and provider adapter exist. See [docs/WHATSAPP_MCP_POLICY.md](./docs/WHATSAPP_MCP_POLICY.md) and [docs/OPENAI_MCP_READINESS.md](./docs/OPENAI_MCP_READINESS.md).
+The MCP surface advertises explicit OpenAI-compatible tool annotations, structured output schemas, per-tool OAuth scopes, and actionable authentication challenges. Its local persistent Worker uses one SQLite-backed Durable Object per authenticated tenant. Signed Meta events can populate normalized conversation history, while connected agents receive only bounded read tools and never raw payloads, provider identifiers, arbitrary SQL, or policy mutation. Provider-backed reply and approved-template tools are registered only when a trusted messaging capability is supplied. The default worker remains deny-all until a production OAuth verifier and provider adapter exist. See [docs/WHATSAPP_MCP_POLICY.md](./docs/WHATSAPP_MCP_POLICY.md) and [docs/OPENAI_MCP_READINESS.md](./docs/OPENAI_MCP_READINESS.md).
+
+Local persistent Worker configuration is in `wrangler.mcp.jsonc`. It is prepared for local development only and has not been deployed. The data model and trust boundaries are documented in [docs/CONVERSATION_PERSISTENCE.md](./docs/CONVERSATION_PERSISTENCE.md).
 
 The current business loop uses a copied mock snapshot of public grocery products so the response behavior can be tested before connecting a real inventory surface.
 
@@ -207,6 +209,8 @@ src/notifications Admin review notification composition
 src/sessions      24-hour in-memory sender session context
 src/logging       Console logger and persistent webhook event log
 src/local         Demo and environment check scripts
+src/mcp           MCP tools, tenant-scoped conversation storage, and policy enforcement
+src/meta          Signed Meta webhook and normalized event ingestion
 ```
 
 ## Persistent Webhook Logs

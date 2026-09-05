@@ -14,6 +14,11 @@ export const WHATSAPP_MCP_READ_TOOL_ALLOWLIST = [
   "whatsapp_evaluate_action"
 ] as const;
 
+export const WHATSAPP_MCP_CONVERSATION_READ_TOOL_ALLOWLIST = [
+  "whatsapp_list_conversations",
+  "whatsapp_get_conversation_history"
+] as const;
+
 export const WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST = [
   "whatsapp_reply_to_inbound",
   "whatsapp_send_template"
@@ -21,6 +26,7 @@ export const WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST = [
 
 export const WHATSAPP_MCP_TOOL_ALLOWLIST = [
   ...WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
+  ...WHATSAPP_MCP_CONVERSATION_READ_TOOL_ALLOWLIST,
   ...WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST
 ] as const;
 
@@ -40,6 +46,8 @@ export const WHATSAPP_MCP_WRITE_ACTIONS = [
 export type WhatsAppMcpAction =
   | "read_policy"
   | "read_connection_status"
+  | "read_conversations"
+  | "read_conversation_history"
   | (typeof WHATSAPP_MCP_WRITE_ACTIONS)[number];
 
 export type WhatsAppPolicyDecision = {
@@ -54,7 +62,9 @@ export type WhatsAppPolicyDecision = {
 
 const readOnlyActions = new Set<WhatsAppMcpAction>([
   "read_policy",
-  "read_connection_status"
+  "read_connection_status",
+  "read_conversations",
+  "read_conversation_history"
 ]);
 
 export function assertAllowedWhatsAppMcpTool(toolName: string): asserts toolName is WhatsAppMcpToolName {
@@ -71,7 +81,7 @@ export function evaluateWhatsAppMcpAction(action: WhatsAppMcpAction): WhatsAppPo
       status: "allowed",
       code: "ALLOWED_READ_ONLY",
       message: "This read-only action is available.",
-      reasons: ["The action is read-only and returns no message content, customer identity, or provider credential."]
+      reasons: ["The action is read-only, tenant-scoped, and cannot change conversation or provider state."]
     };
   }
 
@@ -120,6 +130,7 @@ export const whatsappPublicPolicy = {
     "Deletion and disconnect requests require an authenticated, auditable workflow and are not exposed as an unattended MCP tool."
   ],
   alwaysRegisteredTools: WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
+  conversationStoreBackedTools: WHATSAPP_MCP_CONVERSATION_READ_TOOL_ALLOWLIST,
   providerBackedTools: WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST,
   runtimePolicyActions: ["reply_to_inbound", "start_conversation", "send_template"],
   administrativeActionsNotExposed: [

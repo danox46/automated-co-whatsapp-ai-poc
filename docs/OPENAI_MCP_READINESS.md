@@ -20,6 +20,14 @@ legal-policy review.
   or template facts.
 - Contract tests for tool lists, annotations, output schemas, OAuth metadata,
   authentication challenges, scope failures, and representative policy paths.
+- Tenant-scoped `whatsapp_list_conversations` and
+  `whatsapp_get_conversation_history` tools with bounded opaque pagination and
+  structured results that exclude raw provider payloads and provider IDs.
+- A local SQLite-backed Durable Object schema that deduplicates messages,
+  reconciles out-of-order delivery statuses, stores enforcement state, and is
+  sharded one object per authenticated tenant.
+- Signed Meta webhook normalization into bounded message records; internal
+  ingestion and policy-state mutation are not exposed as MCP tools.
 
 ## Durable state boundary
 
@@ -50,15 +58,15 @@ reservation when the supplied `notAfter` deadline has passed. Only then is
   S256, supported client registration, issuer identification, resource
   propagation, refresh/revocation handling, and production token verification.
 - Bind every authenticated subject to an allowed tenant and Meta installation.
-- Implement the durable provider state and Meta Cloud API adapter described
-  above.
+- Extend the implemented conversation store with consent/template registries,
+  durable idempotency reservations, and the Meta Cloud API send adapter.
 - Add bounded timeouts, rate limits, retry/backoff rules, duplicate suppression,
   circuit breaking, and provider error translation.
 - Add sanitized metrics and audit events for initialization, authentication,
   tool latency, policy blocks, provider failures, and delivery reconciliation.
   Never log credentials, bearer tokens, phone numbers, or message bodies.
-- Create a separate MCP Worker configuration and permanent HTTPS origin. The
-  existing Wrangler configuration intentionally deploys only the Meta webhook.
+- Assign production secrets and a permanent HTTPS origin to the prepared
+  `wrangler.mcp.jsonc` Worker configuration.
 - Validate the production endpoint with MCP Inspector and ChatGPT developer
   mode, including expired tokens, wrong issuer/audience, missing scopes,
   cross-tenant references, duplicate calls, boundary timing, concurrent sends,

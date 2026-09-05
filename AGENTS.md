@@ -13,6 +13,8 @@ This repository contains a legacy read-only Twilio grocery advisor and a separat
 - Do not add LLM calls until a later task explicitly asks for them.
 - Provider-backed MCP reply and approved-template tools may be developed only behind the server-owned OAuth, tenant, consent, service-window, idempotency, and human-handoff contracts in `docs/WHATSAPP_MCP_POLICY.md`.
 - Do not describe an MCP tool as read-only, idempotent, private, or reversible unless its implementation and advertised annotations prove that claim.
+- Connected agents may read only bounded, normalized, tenant-scoped conversation data. Do not expose raw webhook payloads, provider identifiers, arbitrary queries, history mutation, or policy overrides through MCP tools.
+- Internal trusted application code may ingest messages and update delivery, opt-out, handoff, consent, and enforcement state. Keep that write boundary separate from the connected-agent tool surface.
 
 ## Current Runtime
 
@@ -69,9 +71,14 @@ Use `.env.example` as the template. Never commit `.env`.
 - `src/twilio/sendService.ts`: Twilio REST send
 - `src/mcp/server.ts`: MCP tools, output schemas, annotations, OAuth metadata, and auth challenges
 - `src/mcp/outboundPolicy.ts`: server-owned reply and template dispatch policy
+- `src/mcp/conversationHistory.ts`: normalized conversation models plus internal read/write contracts
+- `src/mcp/durableConversationStore.ts`: tenant-sharded SQLite Durable Object persistence
+- `src/mcp/persistentWorker.ts`: local combined webhook, persistence, and MCP Worker entry point
 - `src/mcp/worker.ts`: deny-all MCP deployment entry point until OAuth/provider wiring exists
+- `src/meta/conversationEvents.ts`: signed-webhook normalization into bounded stored records
 - `src/meta/webhook.ts`: isolated signed Meta webhook
 - `docs/OPENAI_MCP_READINESS.md`: technical public-submission readiness contract
+- `docs/CONVERSATION_PERSISTENCE.md`: storage schema, trust boundaries, and production gaps
 - `public/mock-inventory.html`: static mock inventory viewer
 - `docs/ARCHITECTURE.md`: architecture notes
 - `docs/DEPLOYMENT.md`: deployment handoff
