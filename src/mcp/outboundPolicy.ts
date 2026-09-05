@@ -63,6 +63,7 @@ export type WhatsAppProviderResult = {
 };
 
 export type WhatsAppMessagingCapability = {
+  guaranteesDurableIdempotency: boolean;
   resolveConversation(
     principal: WhatsAppMcpPrincipal,
     conversationRef: string

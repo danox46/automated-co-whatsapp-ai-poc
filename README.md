@@ -1,8 +1,13 @@
-# Automated & Co WhatsApp Grocery Advisor POC
+# Automated & CO WhatsApp MCP and Advisor POC
 
-Reactive WhatsApp assistant POC using Twilio. The bot is inbound-only and read-only: it answers product availability and delivery guidance questions, but it does not create orders, update Shopify, write to CRM, open tickets, send campaigns, or initiate proactive messages.
+This repository contains two deliberately separated surfaces:
 
-The repository also includes a protected Streamable HTTP MCP policy surface. It registers policy/status tools only and denies all WhatsApp write actions until a separate, reviewed release supplies audience-bound OAuth verification and server-side consent evidence. See [docs/WHATSAPP_MCP_POLICY.md](./docs/WHATSAPP_MCP_POLICY.md).
+- a legacy reactive WhatsApp grocery-advisor POC using Twilio; and
+- a policy-enforced Streamable HTTP MCP server plus an isolated signed Meta WhatsApp webhook.
+
+The Twilio advisor remains inbound-only and read-only: it answers product availability and delivery guidance questions, but it does not create orders, update Shopify, write to CRM, open tickets, send campaigns, or initiate proactive messages.
+
+The MCP surface advertises explicit OpenAI-compatible tool annotations, structured output schemas, per-tool OAuth scopes, and actionable authentication challenges. Provider-backed reply and approved-template tools are registered only when a trusted messaging capability is supplied. The default worker remains deny-all until a production OAuth verifier and provider adapter exist. See [docs/WHATSAPP_MCP_POLICY.md](./docs/WHATSAPP_MCP_POLICY.md) and [docs/OPENAI_MCP_READINESS.md](./docs/OPENAI_MCP_READINESS.md).
 
 The current business loop uses a copied mock snapshot of public grocery products so the response behavior can be tested before connecting a real inventory surface.
 

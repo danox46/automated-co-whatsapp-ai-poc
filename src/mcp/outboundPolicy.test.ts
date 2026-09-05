@@ -40,6 +40,7 @@ function capability(
   dispatchTemplateWithPolicy: ReturnType<typeof vi.fn>;
 } {
   return {
+    guaranteesDurableIdempotency: false,
     resolveConversation: vi.fn(async () => resolved),
     validateOutboundContent: vi.fn(async () => ({ allowed: true as const })),
     dispatchReplyWithPolicy: vi.fn(async () => ({ messageRef: "message_1", status: "accepted" as const })),

@@ -2,6 +2,16 @@
 
 This repository contains a Streamable HTTP MCP handler for the WhatsApp lane. It is capability-maximizing and policy-enforced: compliant messaging tools are registered when a server-side Meta provider capability is configured, while the production entry point remains inaccessible until the OAuth verifier and provider dependencies are connected. The MCP handler is not deployed yet.
 
+Every advertised tool declares an output schema plus explicit `readOnlyHint`,
+`openWorldHint`, and `destructiveHint` values. Messaging tools are correctly
+marked destructive because an external message cannot be unsent, even though
+the server applies policy checks before dispatch. Per-tool OAuth scopes are
+mirrored in tool metadata for OpenAI clients, and unauthenticated or
+under-scoped calls return an actionable `mcp/www_authenticate` challenge.
+Write tools advertise `idempotentHint: true` only when the injected provider
+capability explicitly guarantees durable deduplication; incomplete adapters and
+test doubles must advertise `false`.
+
 ## Registered tools
 
 - `whatsapp_get_policy`: returns the public policy version and policy URLs.
@@ -43,6 +53,14 @@ Free-form replies are allowed until immediately before 24 hours after the last v
 Approved templates remain available outside the 24-hour window when the server confirms the template is enabled and the recipient consented to both its category and exact purpose. The MCP never silently converts free-form text into a template.
 
 The provider capability is dependency-injected and absent from the current production entry point. Consequently, no write tools are exposed until durable conversation state, consent/template registries, content validation, idempotent provider dispatch, and OAuth tenant binding are connected.
+
+Durable conversation state is not an MCP protocol requirement and is not
+needed by the policy, status, or action-evaluation tools. It is required only
+by a provider-backed messaging integration: the send boundary must still know
+the last verified inbound-message time, opt-out/handoff state, consent,
+approved templates, policy revision, and consumed idempotency keys after a
+restart or concurrent request. Keep that state in the messaging capability,
+not in the generic MCP transport.
 
 ## Meta sandbox webhook
 

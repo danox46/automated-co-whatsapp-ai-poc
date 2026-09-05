@@ -1,0 +1,70 @@
+# OpenAI MCP technical readiness
+
+This is the local engineering contract for a future public OpenAI plugin. It
+does not authorize deployment, public submission, production messaging, or a
+legal-policy review.
+
+## Locally implemented
+
+- Streamable HTTP MCP handler at `/mcp`.
+- Stable action-oriented tool names and focused descriptions.
+- Strict input schemas and explicit output schemas for every tool.
+- Structured content plus concise text content for every successful result.
+- Explicit `readOnlyHint`, `openWorldHint`, and `destructiveHint` values.
+- Messaging tools marked as external, state-changing, and irreversible.
+- Per-tool OAuth scope metadata and actionable `mcp/www_authenticate` errors.
+- Protected-resource metadata with documentation, privacy, and terms links.
+- Header-only bearer tokens; query-string tokens are rejected.
+- Audience checking and tool-level scope checking.
+- Server instructions that prevent invented recipient, consent, timing, sender,
+  or template facts.
+- Contract tests for tool lists, annotations, output schemas, OAuth metadata,
+  authentication challenges, scope failures, and representative policy paths.
+
+## Provider-backed messaging boundary
+
+The MCP transport itself does not need durable conversation state. A future
+send adapter does, because it must enforce facts that survive restarts and
+concurrency:
+
+- canonical tenant, WhatsApp account, sender, and conversation binding;
+- last verified user-inbound timestamp;
+- opt-out, suppression, automation-pause, and human-handoff state;
+- consented template categories and exact purposes;
+- currently approved and enabled template metadata;
+- policy revision and consumed idempotency keys; and
+- provider message IDs and delivery-status reconciliation.
+
+The adapter must re-read authoritative state and atomically reserve the
+idempotency key immediately before calling Meta. For free-form replies it must
+also reject the reservation when the supplied `notAfter` deadline has passed.
+Only then is `idempotentHint: true` a truthful runtime guarantee.
+
+## Remaining before deployment
+
+- Implement authorization-server discovery, authorization-code flow with PKCE
+  S256, supported client registration, issuer identification, resource
+  propagation, refresh/revocation handling, and production token verification.
+- Bind every authenticated subject to an allowed tenant and Meta installation.
+- Implement the durable provider state and Meta Cloud API adapter described
+  above.
+- Add bounded timeouts, rate limits, retry/backoff rules, duplicate suppression,
+  circuit breaking, and provider error translation.
+- Add sanitized metrics and audit events for initialization, authentication,
+  tool latency, policy blocks, provider failures, and delivery reconciliation.
+  Never log credentials, bearer tokens, phone numbers, or message bodies.
+- Create a separate MCP Worker configuration and permanent HTTPS origin. The
+  existing Wrangler configuration intentionally deploys only the Meta webhook.
+- Validate the production endpoint with MCP Inspector and ChatGPT developer
+  mode, including expired tokens, wrong issuer/audience, missing scopes,
+  cross-tenant references, duplicate calls, boundary timing, concurrent sends,
+  and provider timeouts.
+- Re-scan final deployed metadata and prepare reviewer credentials that do not
+  require MFA or private-network access.
+
+## Release discipline
+
+Treat names, schemas, annotations, security metadata, and server instructions
+as a versioned public contract. Prefer backward-compatible additions. A tool
+that cannot meet its advertised guarantees must remain unregistered rather
+than exposing a degraded or misleading implementation.

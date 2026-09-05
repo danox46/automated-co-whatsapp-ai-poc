@@ -9,17 +9,30 @@ function createAuthorizedHandler(messaging?: WhatsAppMessagingCapability) {
   return createProtectedWhatsAppMcpHandler({
     resource,
     authorizationServer: resource,
-    verifyToken: async (token) => token === "valid-test-token" ? {
-      subject: "test-owner",
-      audience: resource,
-      scopes: new Set(["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.messages.send"])
-    } : null,
+    verifyToken: async (token) => {
+      if (token === "valid-test-token") {
+        return {
+          subject: "test-owner",
+          audience: resource,
+          scopes: new Set(["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.messages.send"])
+        };
+      }
+      if (token === "policy-only-token") {
+        return {
+          subject: "test-owner",
+          audience: resource,
+          scopes: new Set(["whatsapp.policy.read"])
+        };
+      }
+      return null;
+    },
     messaging
   });
 }
 
 function closedWindowMessaging(): WhatsAppMessagingCapability {
   return {
+    guaranteesDurableIdempotency: false,
     resolveConversation: async () => ({
       canonicalConversationRef: "tenant_1:conversation_123",
       policyRevision: "revision_1",
@@ -45,14 +58,28 @@ describe("protected WhatsApp MCP handler", () => {
       resource,
       authorization_servers: [resource],
       scopes_supported: ["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.messages.send"],
-      bearer_methods_supported: ["header"]
+      bearer_methods_supported: ["header"],
+      resource_documentation: "https://automatedandco.danienremoto.com/mcp/whatsapp/",
+      resource_policy_uri: "https://automatedandco.danienremoto.com/mcp/whatsapp/privacidad/",
+      resource_tos_uri: "https://automatedandco.danienremoto.com/mcp/whatsapp/terminos/"
     });
   });
 
-  it("fails closed without a bearer token", async () => {
-    const response = await createAuthorizedHandler().fetch(new Request(`${resource}/mcp`, { method: "POST" }));
-    expect(response.status).toBe(401);
-    expect(response.headers.get("WWW-Authenticate")).toContain("oauth-protected-resource");
+  it("lists tool metadata without a token but fails closed at invocation with an OAuth challenge", async () => {
+    const handler = createAuthorizedHandler();
+    const client = new Client({ name: "unauthenticated-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+      fetch: (url, init) => handler.fetch(new Request(url, init))
+    });
+
+    await client.connect(transport);
+    expect((await client.listTools()).tools).toHaveLength(3);
+    const result = await client.callTool({ name: "whatsapp_get_policy", arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining('error="invalid_token"')
+    ]);
+    await client.close();
   });
 
   it("rejects tokens in query strings", async () => {
@@ -76,6 +103,23 @@ describe("protected WhatsApp MCP handler", () => {
       "whatsapp_get_policy"
     ]);
 
+    const expectedScopes: Record<string, string[]> = {
+      whatsapp_evaluate_action: ["whatsapp.policy.read"],
+      whatsapp_get_connection_status: ["whatsapp.connection.read"],
+      whatsapp_get_policy: ["whatsapp.policy.read"]
+    };
+    for (const tool of tools.tools) {
+      expect(tool.annotations).toMatchObject({
+        readOnlyHint: true,
+        openWorldHint: false,
+        destructiveHint: false
+      });
+      expect(tool.outputSchema).toBeDefined();
+      expect(tool._meta?.securitySchemes).toEqual([
+        { type: "oauth2", scopes: expectedScopes[tool.name] }
+      ]);
+    }
+
     const runtimeCheck = await client.callTool({
       name: "whatsapp_evaluate_action",
       arguments: { action: "start_conversation" }
@@ -86,6 +130,27 @@ describe("protected WhatsApp MCP handler", () => {
       action: "start_conversation",
       status: "runtime_check_required"
     });
+    expect(runtimeCheck.structuredContent).toBeDefined();
+    await client.close();
+  });
+
+  it("returns an actionable insufficient-scope challenge without running the tool", async () => {
+    const handler = createAuthorizedHandler();
+    const client = new Client({ name: "scope-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer policy-only-token" } },
+      fetch: (url, init) => handler.fetch(new Request(url, init))
+    });
+
+    await client.connect(transport);
+    const result = await client.callTool({ name: "whatsapp_get_connection_status", arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining('error="insufficient_scope"')
+    ]);
+    expect(result._meta?.["mcp/www_authenticate"]).toEqual([
+      expect.stringContaining("whatsapp.connection.read")
+    ]);
     await client.close();
   });
 
@@ -106,6 +171,19 @@ describe("protected WhatsApp MCP handler", () => {
       "whatsapp_reply_to_inbound",
       "whatsapp_send_template"
     ]);
+    for (const toolName of ["whatsapp_reply_to_inbound", "whatsapp_send_template"]) {
+      const tool = tools.tools.find((candidate) => candidate.name === toolName);
+      expect(tool?.annotations).toMatchObject({
+        readOnlyHint: false,
+        openWorldHint: true,
+        destructiveHint: true,
+        idempotentHint: false
+      });
+      expect(tool?.outputSchema).toBeDefined();
+      expect(tool?._meta?.securitySchemes).toEqual([
+        { type: "oauth2", scopes: ["whatsapp.messages.send"] }
+      ]);
+    }
 
     const blockedReply = await client.callTool({
       name: "whatsapp_reply_to_inbound",

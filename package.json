@@ -1,8 +1,8 @@
 {
   "name": "automated-co-whatsapp-ai-poc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Reactive read-only WhatsApp grocery advisor POC using Twilio.",
+  "description": "Policy-enforced WhatsApp MCP server with isolated Meta webhook and legacy Twilio advisor POC.",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -18,7 +18,9 @@
     "agent:mock": "tsx src/local/mockAgentCli.ts",
     "agent:codex": "tsx src/local/codexAgentCli.ts",
     "demo": "tsx src/local/demo.ts",
-    "test:mcp-policy": "vitest run src/mcp"
+    "test:mcp-policy": "vitest run src/mcp",
+    "test:meta-webhook": "vitest run src/meta/webhook.test.ts",
+    "verify:mcp": "npm run typecheck && npm run test:mcp-policy && npm run test:meta-webhook && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",

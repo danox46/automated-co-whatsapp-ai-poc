@@ -1,16 +1,18 @@
 # Agent Handoff
 
-This repository is a read-only, reactive WhatsApp grocery advisor POC for Automated & Co.
+This repository contains a legacy read-only Twilio grocery advisor and a separate policy-enforced Meta WhatsApp MCP surface for Automated & CO.
 
 ## Prime Directives
 
-- Keep the bot inbound-only.
+- Keep the legacy Twilio advisor inbound-only.
 - Do not add outreach, campaigns, scheduled sends, or proactive messaging.
 - Do not add order creation, cart mutation, Shopify writes, CRM writes, ticket creation, or customer/product/inventory updates.
 - Inventory integrations must remain read-only behind `InventoryProvider`.
 - Prefer helpful attempts over generic clarification when a known product is detected.
 - Do not escalate the first two unclear messages. Ask focused clarifications first; escalate on the third consecutive unclear inbound turn or clear human-only topics.
 - Do not add LLM calls until a later task explicitly asks for them.
+- Provider-backed MCP reply and approved-template tools may be developed only behind the server-owned OAuth, tenant, consent, service-window, idempotency, and human-handoff contracts in `docs/WHATSAPP_MCP_POLICY.md`.
+- Do not describe an MCP tool as read-only, idempotent, private, or reversible unless its implementation and advertised annotations prove that claim.
 
 ## Current Runtime
 
@@ -20,6 +22,8 @@ This repository is a read-only, reactive WhatsApp grocery advisor POC for Automa
 - Twilio WhatsApp webhook + Twilio REST reply
 - Mock grocery inventory provider
 - Vitest tests
+- Streamable HTTP MCP server with OpenAI submission metadata
+- Signed, size-limited Meta WhatsApp webhook
 
 ## Important Commands
 
@@ -32,6 +36,7 @@ npm run dev
 npm run tunnel
 npm run agent:mock
 npm run agent:codex
+npm run test:mcp-policy
 ```
 
 `npm run verify` is the main pre-handoff gate. It runs typecheck, tests, and build.
@@ -62,6 +67,11 @@ Use `.env.example` as the template. Never commit `.env`.
 - `src/responses/composeResponse.ts`: safe WhatsApp response text
 - `src/twilio/webhookHandler.ts`: inbound webhook handling
 - `src/twilio/sendService.ts`: Twilio REST send
+- `src/mcp/server.ts`: MCP tools, output schemas, annotations, OAuth metadata, and auth challenges
+- `src/mcp/outboundPolicy.ts`: server-owned reply and template dispatch policy
+- `src/mcp/worker.ts`: deny-all MCP deployment entry point until OAuth/provider wiring exists
+- `src/meta/webhook.ts`: isolated signed Meta webhook
+- `docs/OPENAI_MCP_READINESS.md`: technical public-submission readiness contract
 - `public/mock-inventory.html`: static mock inventory viewer
 - `docs/ARCHITECTURE.md`: architecture notes
 - `docs/DEPLOYMENT.md`: deployment handoff

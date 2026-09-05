@@ -1,0 +1,140 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Automated & CO WhatsApp",
+    "subtitle": "Policy-safe WhatsApp",
+    "description": "Connects an authorized WhatsApp Business account so users can inspect connection and policy status, reply inside the verified customer-service window, and send approved templates for consented purposes.",
+    "category": "BUSINESS"
+  },
+  "tools": {
+    "whatsapp_get_policy": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns fixed public policy metadata without changing account or conversation state.",
+        "open_world_justification": "Does not write to WhatsApp or any other external system.",
+        "destructive_justification": "Does not send, delete, overwrite, or revoke anything."
+      }
+    },
+    "whatsapp_get_connection_status": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves sanitized connection readiness without modifying the Meta installation.",
+        "open_world_justification": "Only reads private connection state and does not affect external recipients.",
+        "destructive_justification": "Cannot disconnect, reconfigure, or otherwise change the account."
+      }
+    },
+    "whatsapp_evaluate_action": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Computes a policy decision without executing the evaluated action.",
+        "open_world_justification": "Does not contact Meta, recipients, or another external service.",
+        "destructive_justification": "Returns guidance only and cannot perform an irreversible action."
+      }
+    },
+    "whatsapp_reply_to_inbound": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Sends a WhatsApp message and therefore changes external conversation state.",
+        "open_world_justification": "Transmits a message to an external WhatsApp recipient through Meta.",
+        "destructive_justification": "A sent message cannot be unsent; the server rechecks the window, conversation, scope, and content before delegating to an adapter that must enforce durable idempotency."
+      }
+    },
+    "whatsapp_send_template": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Sends an approved WhatsApp template and changes external conversation state.",
+        "open_world_justification": "Transmits a template message to an external WhatsApp recipient through Meta.",
+        "destructive_justification": "A sent template cannot be unsent; the server rechecks approval and exact-purpose consent before delegating to an adapter that must enforce durable idempotency."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Read the policy enforced by the WhatsApp integration.",
+      "user_prompt": "Show me the rules this WhatsApp connection enforces.",
+      "file_attachment_urls": null,
+      "tools_triggered": "whatsapp_get_policy",
+      "expected_output": "Returns the policy version, public policy URLs, enforced rules, and available tool classes.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Inspect sanitized WhatsApp connection readiness.",
+      "user_prompt": "Is my WhatsApp Business connection ready to send replies?",
+      "file_attachment_urls": null,
+      "tools_triggered": "whatsapp_get_connection_status",
+      "expected_output": "Returns sanitized provider, environment, app mode, connection status, and whether write tools are registered.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Evaluate whether a conversation-start action needs runtime checks.",
+      "user_prompt": "Can this connection start a new WhatsApp conversation?",
+      "file_attachment_urls": null,
+      "tools_triggered": "whatsapp_evaluate_action",
+      "expected_output": "Explains that messaging requires server-owned conversation, consent, template, and service-window checks without sending anything.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Reply during a verified customer-service window.",
+      "user_prompt": "Reply to conversation order-123: Your order is ready for pickup.",
+      "file_attachment_urls": null,
+      "tools_triggered": "whatsapp_reply_to_inbound",
+      "expected_output": "Sends once only when the canonical conversation is authorized and the verified 24-hour window remains open, then returns the provider message reference and status.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Send an approved template for a consented purpose.",
+      "user_prompt": "Send the approved order_update template to conversation order-123.",
+      "file_attachment_urls": null,
+      "tools_triggered": "whatsapp_send_template",
+      "expected_output": "Sends once only when the exact template is enabled and the recipient consented to its category and purpose, then returns the provider message reference and status.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not invoke the app for bulk promotional outreach.",
+      "user_prompt": "Send this promotion to every phone number in my customer list.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because it has no bulk messaging or campaign tool.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not invoke the app to change provider administration.",
+      "user_prompt": "Replace the WhatsApp webhook and rotate the Meta app secret.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because webhook and credential administration are outside its tool surface.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not invoke the WhatsApp app for another messaging channel.",
+      "user_prompt": "Email the customer and send them an SMS too.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because it does not provide email or SMS tools.",
+      "expected_output_url": null
+    }
+  ]
+}

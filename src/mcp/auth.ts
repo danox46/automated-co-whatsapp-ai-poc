@@ -20,6 +20,13 @@ export const SUPPORTED_WHATSAPP_MCP_SCOPES = [
   "whatsapp.messages.send"
 ] as const;
 
+export function hasWhatsAppMcpScopes(
+  principal: WhatsAppMcpPrincipal,
+  requiredScopes: readonly string[]
+): boolean {
+  return requiredScopes.every((scope) => principal.scopes.has(scope));
+}
+
 export function readBearerToken(request: Request): string | null {
   const authorization = request.headers.get("Authorization");
   if (!authorization) return null;
@@ -40,8 +47,7 @@ export function authorizeWhatsAppMcpRequest(
     const principal = await verifier(token, request);
     if (!principal || principal.audience !== expectedAudience) return null;
 
-    const hasAllScopes = REQUIRED_WHATSAPP_MCP_SCOPES.every((scope) => principal.scopes.has(scope));
-    return hasAllScopes ? principal : null;
+    return principal;
   };
 }
 
