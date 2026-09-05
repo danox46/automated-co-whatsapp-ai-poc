@@ -4,6 +4,8 @@ This repository contains a legacy read-only Twilio grocery advisor and a separat
 
 ## Prime Directives
 
+- Treat the internal Streamable HTTP MCP runtime as the default executable lane for all new work.
+- Start the Twilio runtime only through the explicit legacy entrypoint or `WHATSAPP_PROVIDER=legacy_twilio`; do not silently fall back to Twilio when the MCP is unavailable.
 - Keep the legacy Twilio advisor inbound-only.
 - Do not add outreach, campaigns, scheduled sends, or proactive messaging.
 - Do not add order creation, cart mutation, Shopify writes, CRM writes, ticket creation, or customer/product/inventory updates.
@@ -26,6 +28,8 @@ This repository contains a legacy read-only Twilio grocery advisor and a separat
 - Vitest tests
 - Streamable HTTP MCP server with OpenAI submission metadata
 - Signed, size-limited Meta WhatsApp webhook
+- Internal MCP local server as the default `dev` and `start` runtime
+- Explicit legacy Twilio `dev:legacy:twilio` and `start:legacy:twilio` entrypoints
 
 ## Important Commands
 
