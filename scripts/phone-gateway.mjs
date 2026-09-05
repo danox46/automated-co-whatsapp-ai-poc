@@ -43,6 +43,13 @@ export function createPhoneGateway(config, { now = Date.now, upstreamPort = 3100
     for (const [key, expires] of sessions) if (expires <= now()) sessions.delete(key);
     next();
   });
+  // Native form POSTs need their real Origin for the strict CSRF check above.
+  // no-referrer makes browsers send Origin: null; same-origin still suppresses
+  // referrers to other sites. Apply this to retry/error form pages as well.
+  app.use(['/auth/login', '/auth/logout'], (_req, res, next) => {
+    res.set('Referrer-Policy', 'same-origin');
+    next();
+  });
   app.get('/auth/login', (_req, res) => res.type('html').send(page()));
   app.get('/auth/logout', (_req, res) => res.type('html').send(page('', true)));
   app.post('/auth/logout', (req, res) => {

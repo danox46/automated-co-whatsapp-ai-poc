@@ -30,8 +30,16 @@ test('gateway guards every route, forwards authenticated writes/media, revokes a
   }
   assert.equal((await call('/api/conversations', { headers: { cookie: '__Host-inbox=forged' } })).status, 401);
   assert.equal((await call('/', { headers: { host: 'evil.example' } })).status, 421);
+  for (const path of ['/auth/login', '/auth/logout']) {
+    assert.equal((await call(path)).headers.get('referrer-policy'), 'same-origin');
+    for (const badOrigin of [undefined, 'null', 'https://evil.example']) {
+      assert.equal((await call(path, { method: 'POST', headers: badOrigin ? { origin: badOrigin } : {} })).status, 403);
+    }
+  }
   const login = pw => call('/auth/login', { method: 'POST', headers: { origin, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ password: pw }) });
-  assert.equal((await login('wrong-but-long-password')).status, 401);
+  const wrong = await login('wrong-but-long-password');
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.headers.get('referrer-policy'), 'same-origin');
   const logged = await login(password); assert.equal(logged.status, 303);
   const setCookie = logged.headers.get('set-cookie');
   for (const attribute of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/']) assert.ok(setCookie.includes(attribute));
