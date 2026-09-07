@@ -36,6 +36,7 @@ export function createMetaMessagingCapability(input: {
   graph: ReturnType<typeof createMetaGraphClient>;
   encryptionKey: string;
   policyDirectory?: WhatsAppPolicyDirectory;
+  recipientAllowed?: (tenantId: string, recipient: string) => boolean | Promise<boolean>;
   now?: () => Date;
 }): WhatsAppMessagingCapability {
   const policyDirectory = input.policyDirectory ?? denyTemplateDirectory;
@@ -54,6 +55,7 @@ export function createMetaMessagingCapability(input: {
       if (!state) return null;
       return {
         canonicalConversationRef: state.conversationRef,
+        providerParticipantRef: state.providerParticipantRef,
         policyRevision: state.policyRevision,
         lastVerifiedUserInboundAt: state.lastVerifiedUserInboundAt ?? null,
         recipientOptedOut: state.recipientOptedOut,
@@ -77,6 +79,10 @@ export function createMetaMessagingCapability(input: {
       return { allowed: true };
     },
     async dispatchReplyWithPolicy(dispatch) {
+      if (input.recipientAllowed && (
+        !dispatch.conversation.providerParticipantRef ||
+        !await input.recipientAllowed(dispatch.principal.tenantId, dispatch.conversation.providerParticipantRef)
+      )) return sandboxRecipientBlock();
       const fingerprint = await sha256Base64Url(JSON.stringify({
         kind: "free_form_reply",
         conversationRef: dispatch.conversation.canonicalConversationRef,
@@ -119,6 +125,10 @@ export function createMetaMessagingCapability(input: {
       return result;
     },
     async dispatchTemplateWithPolicy(dispatch) {
+      if (input.recipientAllowed && (
+        !dispatch.conversation.providerParticipantRef ||
+        !await input.recipientAllowed(dispatch.principal.tenantId, dispatch.conversation.providerParticipantRef)
+      )) return sandboxRecipientBlock();
       const template = dispatch.conversation.approvedTemplates.find((candidate) =>
         candidate.enabled && candidate.name === dispatch.templateName
       );
@@ -250,6 +260,13 @@ function templateUnavailable(): WhatsAppProtectionDecision {
   return protection(
     "WHATSAPP_TEMPLATE_NOT_APPROVED",
     "That template is no longer approved for this tenant. Nothing was sent."
+  );
+}
+
+function sandboxRecipientBlock(): WhatsAppProtectionDecision {
+  return protection(
+    "WHATSAPP_SANDBOX_RECIPIENT_NOT_ALLOWED",
+    "This development tenant can send only to a server-approved Meta sandbox recipient. Nothing was sent."
   );
 }
 

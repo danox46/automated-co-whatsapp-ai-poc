@@ -97,6 +97,7 @@ function createFixture() {
     expiresAt: 1_789_662_400
   }));
   const revokeAuthorizationSessions = vi.fn(async () => undefined);
+  const registerSandboxRecipients = vi.fn(async () => undefined);
   const fixedNow = new Date("2026-09-07T12:00:00.000Z");
   const handler = createPilotOnboardingHandler({
     META_APP_ID: "public-app-id",
@@ -112,6 +113,14 @@ function createFixture() {
     deleteConversationData,
     createAuthorizationSession,
     revokeAuthorizationSessions,
+    sandbox: {
+      tenantId: "automated-co-sandbox",
+      wabaId: "5550002001",
+      phoneNumberId: "5550001001",
+      accessToken: "sandbox_access_token_ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      allowedRecipients: ["15550000001"]
+    },
+    registerSandboxRecipients,
     now: () => fixedNow
   });
   return {
@@ -121,6 +130,7 @@ function createFixture() {
     deleteConversationData,
     createAuthorizationSession,
     revokeAuthorizationSessions,
+    registerSandboxRecipients,
     installations
   };
 }
@@ -137,6 +147,80 @@ function adminRequest(path: string, method: string, body?: unknown, token = "own
 }
 
 describe("closed-pilot onboarding", () => {
+  it("connects an app-owned sandbox without Embedded Signup and never exposes its secrets", async () => {
+    const fixture = createFixture();
+    const invitationResponse = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/sandbox/invitations",
+      "POST",
+      { label: "Automated & CO owner sandbox", expiresInHours: 24 }
+    ));
+    expect(invitationResponse?.status).toBe(201);
+    const invitation = await invitationResponse?.json() as { invitationUrl: string; tenantId: string };
+    expect(invitation.tenantId).toBe("automated-co-sandbox");
+
+    const redirect = await fixture.handler.fetch(new Request(invitation.invitationUrl));
+    expect(redirect?.status).toBe(303);
+    expect(redirect?.headers.get("location")).toBe(`${origin}/pilot/whatsapp/sandbox`);
+    const cookie = redirect?.headers.get("set-cookie")?.split(";")[0] as string;
+
+    const connected = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/sandbox`, {
+      headers: { Cookie: cookie }
+    }));
+    const html = await connected?.text() as string;
+    expect(connected?.status).toBe(200);
+    expect(connected?.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(connected?.headers.getSetCookie()).toHaveLength(2);
+    expect(html).toContain(`${origin}/mcp`);
+    expect(html).not.toContain("15550000001");
+    expect(html).not.toContain("5550001001");
+    expect(html).not.toContain("sandbox_access_token");
+    expect(fixture.graph.verifyPhoneBelongsToWaba).toHaveBeenCalledWith(
+      "sandbox_access_token_ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "5550002001",
+      "5550001001"
+    );
+    expect(fixture.registerSandboxRecipients).toHaveBeenCalledWith(
+      "automated-co-sandbox",
+      "5550001001",
+      ["15550000001"],
+      new Date("2026-09-07T12:00:00.000Z")
+    );
+    expect(fixture.installations.get("automated-co-sandbox")?.status).toBe("connected");
+
+    const replay = await fixture.handler.fetch(new Request(invitation.invitationUrl));
+    expect(replay?.status).toBe(410);
+  });
+
+  it("rotates an unused sandbox invitation without exposing provider configuration", async () => {
+    const fixture = createFixture();
+    const originalResponse = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/sandbox/invitations",
+      "POST",
+      { label: "Automated & CO owner sandbox", expiresInHours: 24 }
+    ));
+    const original = await originalResponse?.json() as { invitationUrl: string };
+
+    const rotatedResponse = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/sandbox/invitations/rotate",
+      "POST",
+      { label: "Automated & CO owner sandbox", expiresInHours: 24 }
+    ));
+    expect(rotatedResponse?.status).toBe(201);
+    const rotatedText = await rotatedResponse?.text() as string;
+    expect(JSON.parse(rotatedText)).toMatchObject({
+      ok: true,
+      tenantId: "automated-co-sandbox",
+      cohortRole: "internal",
+      rotated: true
+    });
+    expect(rotatedText).not.toContain("15550000001");
+    expect(rotatedText).not.toContain("5550001001");
+    expect(rotatedText).not.toContain("sandbox_access_token");
+
+    const oldInvitation = await fixture.handler.fetch(new Request(original.invitationUrl));
+    expect(oldInvitation?.status).toBe(410);
+  });
+
   it("creates a one-time invite, strips it from the URL, and completes verified signup", async () => {
     const fixture = createFixture();
     const unauthorized = await fixture.handler.fetch(adminRequest(

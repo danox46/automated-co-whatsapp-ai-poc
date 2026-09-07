@@ -13,6 +13,8 @@ export type WhatsAppApprovedTemplate = {
 
 export type ResolvedWhatsAppConversation = {
   canonicalConversationRef: string;
+  /** Internal-only provider destination used for server-side sandbox enforcement. */
+  providerParticipantRef?: string;
   policyRevision: string;
   lastVerifiedUserInboundAt: string | null;
   recipientOptedOut: boolean;
@@ -28,6 +30,7 @@ export type WhatsAppProtectionCode =
   | "WHATSAPP_CONVERSATION_STATE_CHANGED"
   | "WHATSAPP_SEND_IN_PROGRESS"
   | "WHATSAPP_RECIPIENT_OPTED_OUT"
+  | "WHATSAPP_SANDBOX_RECIPIENT_NOT_ALLOWED"
   | "WHATSAPP_AUTOMATION_PAUSED"
   | "WHATSAPP_NO_VERIFIED_USER_MESSAGE"
   | "WHATSAPP_INVALID_INBOUND_TIMESTAMP"

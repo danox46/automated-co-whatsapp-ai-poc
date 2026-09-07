@@ -44,6 +44,25 @@ OAUTH_SIGNING_PRIVATE_JWK
 OAUTH_SIGNING_PUBLIC_JWK
 ```
 
+For the optional app-owned Meta test-number lane, keep the fixed sandbox tenant,
+WABA, and phone-number IDs as non-secret configuration. Store the temporary or
+system-user access token and the international-format recipient allowlist as
+secrets:
+
+```text
+META_SANDBOX_TENANT_ID
+META_SANDBOX_WABA_ID
+META_SANDBOX_PHONE_NUMBER_ID
+META_SANDBOX_ACCESS_TOKEN
+META_SANDBOX_ALLOWED_RECIPIENTS
+META_SANDBOX_TOKEN_EXPIRES_AT (optional)
+```
+
+The allowlist accepts one to five comma-separated numbers. It is checked again
+immediately before every provider dispatch for the sandbox tenant. A connected
+agent never receives those numbers, the provider token, or the provider asset
+IDs.
+
 Generate independent high-entropy values for the webhook verification token, conversation-reference HMAC key, installation encryption key, pilot administrator token, and OAuth RSA signing key. Do not reuse the Meta App Secret and do not put any value in Git, dashboard HTML, build output, command history, or invitation messages.
 
 The default OpenAI client configuration is:
@@ -84,6 +103,33 @@ POST /mcp
 `/health` must report `pilotOnboardingConfigured`, `oauthConfigured`, `oauthVerifierConfigured`, and `outboundMessagingConfigured` as `true`. Tool metadata may be discovered without a tenant token, but every tool invocation must authenticate before it reads tenant data or changes state. An unauthenticated invocation returns the MCP OAuth challenge in `mcp/www_authenticate`; an HTTP authorization rejection, when used, must carry the equivalent `WWW-Authenticate` resource-metadata challenge.
 
 ## Invite and supervise a client
+
+### Connect the app-owned sandbox
+
+Business Verification is not required for Meta's app-owned test number. After
+the sandbox token and recipient allowlist are present as Worker secrets, create
+a one-time owner link:
+
+```text
+npm run pilot:admin:windows -- sandbox-invite https://<public-origin> "Automated & CO owner sandbox"
+```
+
+Open only the returned URL in the same browser that will authorize ChatGPT. The
+link verifies the test token against the configured WABA and phone, subscribes
+the app webhook, registers only opaque allowlisted-recipient conversations, and
+creates the tenant's OAuth browser session. It never invokes client Embedded
+Signup and therefore does not weaken or bypass the Business Verification gate.
+
+After the page reports success, add `https://<public-origin>/mcp` to ChatGPT.
+The connection is account-scoped by ChatGPT; each chat must still select or use
+the connected app according to the ChatGPT product surface. Free-form replies
+remain limited to the verified 24-hour service window. Outside that window, the
+only permitted initiation is an exact Meta-approved template with the recorded
+category and purpose consent.
+
+The Meta test access token may expire. A failed or expired token must be rotated
+in the Worker secret store and the sandbox installation reconnected; never put
+it in a URL, dashboard, chat, CLI argument, or Git.
 
 Keep the administrator token in the process environment and create a one-time, 24-hour invitation:
 

@@ -78,7 +78,7 @@ export async function persistMetaConversationEvents(
   return { messagesStored, statusesProcessed };
 }
 
-async function opaqueConversationRef(
+export async function opaqueConversationRef(
   tenantId: string,
   providerAccountRef: string,
   providerParticipantRef: string,

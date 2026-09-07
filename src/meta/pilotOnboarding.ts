@@ -7,6 +7,7 @@ import {
   secureEqualText
 } from "./pilotCrypto.js";
 import { SUPPORTED_WHATSAPP_MCP_SCOPES } from "../mcp/auth.js";
+import type { WhatsAppSandboxConfig } from "./sandboxConfig.js";
 
 const INVITE_COOKIE = "__Host-wa_pilot_invite";
 export const PILOT_SESSION_COOKIE = "__Host-wa_pilot_session";
@@ -33,6 +34,13 @@ export type PilotOnboardingDependencies = {
     approvedScopes: readonly string[]
   ) => Promise<{ rawSession: string; expiresAt: number }>;
   revokeAuthorizationSessions: (tenantId: string) => Promise<void>;
+  sandbox?: WhatsAppSandboxConfig;
+  registerSandboxRecipients?: (
+    tenantId: string,
+    phoneNumberId: string,
+    recipients: readonly string[],
+    registeredAt: Date
+  ) => Promise<void>;
   now?: () => Date;
 };
 
@@ -49,6 +57,9 @@ export function createPilotOnboardingHandler(
       if (url.pathname === "/pilot/whatsapp/connect" && request.method === "GET") {
         return connectPage(request);
       }
+      if (url.pathname === "/pilot/whatsapp/sandbox" && request.method === "GET") {
+        return connectSandbox(request);
+      }
       if (url.pathname === "/pilot/whatsapp/callback" && request.method === "POST") {
         return completeSignup(request);
       }
@@ -57,6 +68,12 @@ export function createPilotOnboardingHandler(
       }
       if (url.pathname === "/admin/pilot/invitations/rotate" && request.method === "POST") {
         return createInvitation(request, true);
+      }
+      if (url.pathname === "/admin/pilot/sandbox/invitations" && request.method === "POST") {
+        return createSandboxInvitation(request);
+      }
+      if (url.pathname === "/admin/pilot/sandbox/invitations/rotate" && request.method === "POST") {
+        return createSandboxInvitation(request, true);
       }
       const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect))?$/u.exec(url.pathname);
       if (installationMatch && request.method === "GET" && !installationMatch[2]) {
@@ -173,6 +190,96 @@ export function createPilotOnboardingHandler(
     }
   }
 
+  async function connectSandbox(request: Request): Promise<Response> {
+    const sandbox = dependencies.sandbox;
+    if (!sandbox || !dependencies.registerSandboxRecipients) {
+      return jsonError("WHATSAPP_SANDBOX_NOT_CONFIGURED", "The app-owned WhatsApp sandbox is not configured.", 503);
+    }
+    const url = new URL(request.url);
+    const queryToken = url.searchParams.get("invite");
+    if (queryToken) {
+      const invite = await dependencies.registry.getInvite(queryToken, now());
+      if (!invite || invite.cohortRole !== "internal" || invite.tenantId !== sandbox.tenantId) {
+        return htmlError("This sandbox invitation is invalid, expired, or already used.", 410);
+      }
+      return new Response(null, {
+        status: 303,
+        headers: securityHeaders({
+          Location: `${publicOrigin}/pilot/whatsapp/sandbox`,
+          "Set-Cookie": inviteCookie(queryToken, invite.expiresAt)
+        })
+      });
+    }
+
+    const inviteToken = readCookie(request, INVITE_COOKIE);
+    if (!inviteToken) return htmlError("Open the complete sandbox invitation link to continue.", 401);
+    const invite = await dependencies.registry.getInvite(inviteToken, now());
+    if (!invite || invite.cohortRole !== "internal" || invite.tenantId !== sandbox.tenantId) {
+      return htmlError("This sandbox invitation is invalid, expired, or already used.", 410);
+    }
+
+    const state = randomBase64Url(32);
+    const sessionExpiresAt = new Date(Math.min(
+      Date.parse(invite.expiresAt),
+      now().getTime() + SESSION_TTL_MS
+    )).toISOString();
+    await dependencies.registry.beginSession(inviteToken, state, sessionExpiresAt, now());
+    const claimed = await dependencies.registry.consumeSession(inviteToken, state, now());
+    if (!claimed) return htmlError("This sandbox invitation was already used. Request a new link.", 409);
+
+    let subscribed = false;
+    let authorizationSession: { rawSession: string; expiresAt: number } | null = null;
+    try {
+      const phone = await dependencies.graph.verifyPhoneBelongsToWaba(
+        sandbox.accessToken,
+        sandbox.wabaId,
+        sandbox.phoneNumberId
+      );
+      await dependencies.graph.subscribeApp(sandbox.accessToken, sandbox.wabaId);
+      subscribed = true;
+      const connectedAt = now();
+      await dependencies.registerSandboxRecipients(
+        sandbox.tenantId,
+        sandbox.phoneNumberId,
+        sandbox.allowedRecipients,
+        connectedAt
+      );
+      authorizationSession = await dependencies.createAuthorizationSession(
+        sandbox.tenantId,
+        ["openid", ...SUPPORTED_WHATSAPP_MCP_SCOPES]
+      );
+      await dependencies.registry.completeInstallation(inviteToken, {
+        tenantId: sandbox.tenantId,
+        wabaId: sandbox.wabaId,
+        phoneNumberId: sandbox.phoneNumberId,
+        ...(phone.verifiedName ? { verifiedName: phone.verifiedName } : {}),
+        ...(phone.displayPhoneNumber ? { displayPhoneNumber: phone.displayPhoneNumber } : {}),
+        encryptedAccessToken: await encryptPilotSecret(sandbox.accessToken, env.INSTALLATION_ENCRYPTION_KEY),
+        ...(sandbox.tokenExpiresAt ? { tokenExpiresAt: sandbox.tokenExpiresAt } : {}),
+        connectedAt: connectedAt.toISOString(),
+        webhookSubscribedAt: connectedAt.toISOString(),
+        status: "connected"
+      }, connectedAt);
+      return renderSandboxConnectedPage(
+        invite.label,
+        `${publicOrigin}/mcp`,
+        authorizationSession.rawSession,
+        authorizationSession.expiresAt
+      );
+    } catch (error) {
+      if (authorizationSession) await dependencies.revokeAuthorizationSessions(sandbox.tenantId);
+      if (subscribed) {
+        try {
+          await dependencies.graph.unsubscribeApp(sandbox.accessToken, sandbox.wabaId);
+        } catch {
+          // Preserve the original fail-closed response; the admin status path supports reconciliation.
+        }
+      }
+      const code = error instanceof MetaGraphError ? error.code : "WHATSAPP_SANDBOX_CONNECTION_FAILED";
+      return jsonError(code, "The sandbox connection could not be completed. No MCP access was enabled.", 502);
+    }
+  }
+
   async function createInvitation(request: Request, rotate = false): Promise<Response> {
     if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
     const body = await readBoundedJson(request);
@@ -210,6 +317,49 @@ export function createPilotOnboardingHandler(
       invitationUrl: `${publicOrigin}/pilot/whatsapp/connect?invite=${encodeURIComponent(token)}`,
       disclosure: "This one-time link grants only the bounded WhatsApp pilot onboarding flow."
     }, { status: 201, headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" }) });
+  }
+
+  async function createSandboxInvitation(request: Request, rotate = false): Promise<Response> {
+    if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
+    const sandbox = dependencies.sandbox;
+    if (!sandbox || !dependencies.registerSandboxRecipients) {
+      return jsonError("WHATSAPP_SANDBOX_NOT_CONFIGURED", "Configure the app-owned sandbox before creating its invitation.", 503);
+    }
+    if (await dependencies.registry.getInstallation(sandbox.tenantId)) {
+      return jsonError("PILOT_TENANT_ALREADY_CONNECTED", "The sandbox tenant already has an installation.", 409);
+    }
+    const body = await readBoundedJson(request);
+    const label = readString(body?.label);
+    const expiresInHours = typeof body?.expiresInHours === "number" ? body.expiresInHours : 24;
+    if (!label || label.length > 120 || !Number.isInteger(expiresInHours) ||
+        expiresInHours < 1 || expiresInHours > 24) {
+      return jsonError("WHATSAPP_SANDBOX_INVITATION_INVALID", "Expected a safe label and expiry from 1 to 24 hours.", 400);
+    }
+    const expiresAt = new Date(now().getTime() + expiresInHours * 60 * 60 * 1000).toISOString();
+    try {
+      const invitation = {
+        tenantId: sandbox.tenantId,
+        label,
+        cohortRole: "internal" as const,
+        expiresAt
+      };
+      const token = rotate
+        ? await dependencies.registry.rotateInvite(invitation, now())
+        : await dependencies.registry.createInvite(invitation, now());
+      return Response.json({
+        ok: true,
+        tenantId: sandbox.tenantId,
+        cohortRole: "internal",
+        expiresAt,
+        rotated: rotate,
+        invitationUrl: `${publicOrigin}/pilot/whatsapp/sandbox?invite=${encodeURIComponent(token)}`,
+        disclosure: "This one-time link connects only the app-owned WhatsApp test number and its server allowlist."
+      }, { status: 201, headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" }) });
+    } catch {
+      return rotate
+        ? jsonError("WHATSAPP_SANDBOX_INVITATION_NOT_ROTATABLE", "No matching unused sandbox invitation is available to rotate.", 409)
+        : jsonError("PILOT_COHORT_LIMIT_REACHED", "The approved internal sandbox seat is unavailable.", 409);
+    }
   }
 
   async function getInstallation(request: Request, tenantId: string): Promise<Response> {
@@ -299,6 +449,31 @@ const sdk=document.createElement('script');sdk.src='https://connect.facebook.net
       "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}' https://connect.facebook.net; style-src 'nonce-${nonce}'; connect-src 'self' https://www.facebook.com https://web.facebook.com; frame-src https://www.facebook.com https://web.facebook.com; img-src data: https://www.facebook.com; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`
     })
   });
+}
+
+function renderSandboxConnectedPage(
+  label: string,
+  mcpUrl: string,
+  rawSession: string,
+  expiresAtSeconds: number
+): Response {
+  const nonce = randomBase64Url(18);
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WhatsApp sandbox connected · Automated &amp; CO</title>
+<style nonce="${nonce}">:root{color-scheme:dark}body{margin:0;background:#0c1015;color:#f5f7fa;font:16px/1.5 system-ui,sans-serif}.shell{max-width:720px;margin:8vh auto;padding:32px}.card{background:#151b23;border:1px solid #2a3442;border-radius:18px;padding:32px}h1{font-size:2rem;margin:.2rem 0 1rem}.eyebrow{color:#64d7ba;text-transform:uppercase;letter-spacing:.12em;font-weight:700;font-size:.78rem}.muted{color:#a9b4c2}code{display:block;padding:14px;border-radius:10px;background:#0c1015;color:#b9f5e4;overflow-wrap:anywhere}.fine{font-size:.86rem;color:#8693a3;margin-top:24px}</style></head>
+<body><main class="shell"><section class="card"><div class="eyebrow">App-owned test environment</div><h1>${escapeHtml(label)} is connected</h1>
+<p>The Meta test number is bound to an internal sandbox tenant. Provider sends are restricted again at dispatch time to the server-side recipient allowlist.</p>
+<p class="muted">Add this MCP URL to ChatGPT from this same browser session:</p><code>${escapeHtml(mcpUrl)}</code>
+<p class="muted">Free-form messages still require a verified inbound message within 24 hours. Outside that window, only an enabled provider-approved template with recorded consent can send.</p>
+<p class="fine">This page never displays the test recipient, provider token, WABA identifier, phone-number identifier, or invitation secret.</p></section></main></body></html>`;
+  const headers = securityHeaders({
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy": `default-src 'none'; style-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+  });
+  headers.append("Set-Cookie", clearInviteCookie());
+  headers.append("Set-Cookie", authorizationCookie(rawSession, expiresAtSeconds));
+  return new Response(html, { headers });
 }
 
 function htmlError(message: string, status: number): Response {

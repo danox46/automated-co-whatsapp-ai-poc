@@ -41,8 +41,15 @@ import {
   createMetaMessagingCapability
 } from "../meta/messagingCapability.js";
 import { createWhatsAppPolicyAdminHandler } from "../meta/policyAdmin.js";
+import { opaqueConversationRef } from "../meta/conversationEvents.js";
+import {
+  readWhatsAppSandboxConfig,
+  sandboxRecipientAllowed,
+  type WhatsAppSandboxConfig,
+  type WhatsAppSandboxEnv
+} from "../meta/sandboxConfig.js";
 
-export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & {
+export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & WhatsAppSandboxEnv & {
   CONVERSATIONS: DurableConversationNamespace;
   PILOT_INSTALLATIONS: PilotInstallationNamespace;
   OAUTH_STATE: OAuthStateNamespace;
@@ -87,6 +94,13 @@ export function createPersistentWhatsAppWorker(
       const oauthState = createDurableOAuthState(env.OAUTH_STATE);
       const oauthConfigured = hasOAuthConfiguration(env);
       const pilotConfigured = hasPilotConfiguration(env) && oauthConfigured;
+      let sandboxConfigurationValid = true;
+      let sandbox: WhatsAppSandboxConfig | null = null;
+      try {
+        sandbox = readWhatsAppSandboxConfig(env);
+      } catch {
+        sandboxConfigurationValid = false;
+      }
       const pathname = new URL(request.url).pathname;
       const graph = pilotConfigured ? createMetaGraphClient({
         appId: env.META_APP_ID as string,
@@ -98,7 +112,14 @@ export function createPersistentWhatsAppWorker(
         registry,
         graph,
         encryptionKey: env.INSTALLATION_ENCRYPTION_KEY as string,
-        policyDirectory: createDurableWhatsAppPolicyDirectory(env.CONVERSATIONS)
+        policyDirectory: createDurableWhatsAppPolicyDirectory(env.CONVERSATIONS),
+        recipientAllowed: (tenantId, recipient) => {
+          const configuredSandboxTenant = env.META_SANDBOX_TENANT_ID;
+          if (configuredSandboxTenant && tenantId === configuredSandboxTenant) {
+            return sandboxConfigurationValid && sandboxRecipientAllowed(sandbox, tenantId, recipient);
+          }
+          return true;
+        }
       }) : undefined);
 
       let runtimeTokenVerifier = options.verifyToken;
@@ -154,7 +175,30 @@ export function createPersistentWhatsAppWorker(
             createDurableConversationRetentionController(env.CONVERSATIONS)
               .deleteAllConversationData(tenantId),
           createAuthorizationSession: oauthState.createPilotSession,
-          revokeAuthorizationSessions: oauthState.revokeTenant
+          revokeAuthorizationSessions: oauthState.revokeTenant,
+          ...(sandbox ? {
+            sandbox,
+            registerSandboxRecipients: async (tenantId, phoneNumberId, recipients, registeredAt) => {
+              const stub = env.CONVERSATIONS.getByName(tenantId);
+              await stub.initializeTenant(tenantId);
+              let index = 0;
+              for (const recipient of recipients) {
+                index += 1;
+                await stub.registerConversation({
+                  conversationRef: await opaqueConversationRef(
+                    tenantId,
+                    phoneNumberId,
+                    recipient,
+                    env.CONVERSATION_REF_SECRET
+                  ),
+                  providerAccountRef: phoneNumberId,
+                  providerParticipantRef: recipient,
+                  displayName: `Approved sandbox recipient ${index}`,
+                  registeredAt: registeredAt.toISOString()
+                });
+              }
+            }
+          } : {})
         });
         const policyAdmin = createWhatsAppPolicyAdminHandler({
           adminToken: env.PILOT_ADMIN_TOKEN as string,
@@ -189,6 +233,9 @@ export function createPersistentWhatsAppWorker(
           retention: retentionPolicy,
           conversationReadTools: true,
           pilotOnboardingConfigured: pilotConfigured,
+          sandboxConfigured: Boolean(sandbox),
+          sandboxConfigurationValid,
+          sandboxRecipientRestriction: sandbox ? "server-allowlist" : "not-configured",
           oauthConfigured,
           tenantRouting: "waba-sharded",
           oauthVerifierConfigured: Boolean(runtimeTokenVerifier),

@@ -82,6 +82,13 @@ export type ConversationDeletionResult = {
 
 export type DurableConversationObjectStub = {
   initializeTenant(tenantId: string): Promise<void>;
+  registerConversation(input: {
+    conversationRef: string;
+    providerAccountRef: string;
+    providerParticipantRef: string;
+    displayName?: string;
+    registeredAt: string;
+  }): Promise<void>;
   ingestMessage(message: Omit<InternalConversationMessage, "tenantId">): Promise<void>;
   updateMessageStatus(update: Omit<InternalMessageStatusUpdate, "tenantId">): Promise<void>;
   updatePolicyState(patch: Omit<InternalConversationPolicyPatch, "tenantId">): Promise<void>;
@@ -291,6 +298,39 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM pending_message_statuses");
     this.ctx.storage.sql.exec("DELETE FROM conversations");
     return { conversationsDeleted, messagesDeleted, pendingStatusesDeleted };
+  }
+
+  async registerConversation(input: {
+    conversationRef: string;
+    providerAccountRef: string;
+    providerParticipantRef: string;
+    displayName?: string;
+    registeredAt: string;
+  }): Promise<void> {
+    if (!input.conversationRef || input.conversationRef.length > 200) throw new Error("Invalid conversation reference");
+    if (!/^\d{3,32}$/u.test(input.providerAccountRef)) throw new Error("Invalid provider account reference");
+    if (!/^\d{7,20}$/u.test(input.providerParticipantRef)) throw new Error("Invalid provider participant reference");
+    if (input.displayName && input.displayName.length > 200) throw new Error("Invalid conversation display name");
+    parseCanonicalIso(input.registeredAt, "conversation registration time");
+    this.assertInitialized();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO conversations (
+        conversation_ref, provider_account_ref, provider_participant_ref,
+        display_name, created_at, updated_at, last_message_at,
+        message_count, unread_inbound_count, recipient_opted_out,
+        automation_paused, policy_revision
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 'v1')
+      ON CONFLICT(conversation_ref) DO UPDATE SET
+        display_name = COALESCE(excluded.display_name, conversations.display_name),
+        updated_at = MAX(conversations.updated_at, excluded.updated_at)`,
+      input.conversationRef,
+      input.providerAccountRef,
+      input.providerParticipantRef,
+      input.displayName ?? null,
+      input.registeredAt,
+      input.registeredAt,
+      input.registeredAt
+    );
   }
 
   async ingestMessage(message: Omit<InternalConversationMessage, "tenantId">): Promise<void> {
