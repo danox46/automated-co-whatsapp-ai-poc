@@ -23,6 +23,7 @@
     "agent:codex": "node ./node_modules/tsx/dist/cli.mjs src/local/codexAgentCli.ts",
     "demo": "node ./node_modules/tsx/dist/cli.mjs src/local/demo.ts",
     "pilot:admin": "node scripts/pilot-admin.mjs",
+    "pilot:admin:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pilot-admin.ps1",
     "test:mcp-policy": "node ./node_modules/vitest/vitest.mjs run src/mcp",
     "test:meta-webhook": "node ./node_modules/vitest/vitest.mjs run src/meta/webhook.test.ts",
     "test:workers": "node ./node_modules/vitest/vitest.mjs run --config vitest.cloudflare.config.ts",

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+class PilotAdminError extends Error {}
+
+try {
 const [command, baseUrl, tenantId, ...rest] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
@@ -52,8 +55,14 @@ if (!response.ok) {
 }
 
 process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+} catch (error) {
+  const message = error instanceof PilotAdminError
+    ? error.message
+    : "Pilot administration failed unexpectedly.";
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
+}
 
 function fail(message) {
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
+  throw new PilotAdminError(message);
 }

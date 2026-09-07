@@ -91,6 +91,19 @@ Keep the administrator token in the process environment and create a one-time, 2
 PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- invite https://<public-origin> <tenant-id> "<client label>" client
 ```
 
+On Daniel's Windows operator host, the token is already stored under the
+`AutomatedCo/WhatsAppMCP/PILOT_ADMIN_TOKEN` Generic Credential target. Use the
+wrapper below so its value is read directly into the child process environment
+and is never copied into the command line or printed:
+
+```text
+npm run pilot:admin:windows -- invite https://<public-origin> <tenant-id> "<client label>" client
+```
+
+The wrapper removes the temporary process environment value when the command
+finishes. The invitation response itself is sensitive because it contains a
+one-time link; transmit only that URL to the exact named pilot contact.
+
 Send only the returned one-time invitation URL to the named pilot contact. The invite establishes both the Meta installation and a scoped browser session for the OAuth connection. The client should add `https://<public-origin>/mcp` to ChatGPT from the same browser session.
 
 Check installation state:
@@ -98,6 +111,9 @@ Check installation state:
 ```text
 PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- status https://<public-origin> <tenant-id>
 ```
+
+The `status`, `disconnect`, and `delete` commands can use the same
+`pilot:admin:windows` wrapper on that host.
 
 Before a supervised send, verify the conversation exists, the customer-service window is open, and the reply is expected. Outside the window, enable only an exact Meta-approved template and record the recipient's category and purpose consent in the internal policy API. The MCP performs the same checks again atomically at dispatch time.
 
