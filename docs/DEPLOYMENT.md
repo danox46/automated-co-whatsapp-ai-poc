@@ -81,7 +81,7 @@ GET  /.well-known/jwks.json
 POST /mcp
 ```
 
-`/health` must report `pilotOnboardingConfigured`, `oauthConfigured`, `oauthVerifierConfigured`, and `outboundMessagingConfigured` as `true`. An unauthenticated MCP tool call must fail with `401` and a `WWW-Authenticate` resource-metadata challenge.
+`/health` must report `pilotOnboardingConfigured`, `oauthConfigured`, `oauthVerifierConfigured`, and `outboundMessagingConfigured` as `true`. Tool metadata may be discovered without a tenant token, but every tool invocation must authenticate before it reads tenant data or changes state. An unauthenticated invocation returns the MCP OAuth challenge in `mcp/www_authenticate`; an HTTP authorization rejection, when used, must carry the equivalent `WWW-Authenticate` resource-metadata challenge.
 
 ## Invite and supervise a client
 
