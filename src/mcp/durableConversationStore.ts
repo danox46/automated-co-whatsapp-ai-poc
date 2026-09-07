@@ -89,6 +89,27 @@ export type DurableConversationObjectStub = {
   getConversationEnforcementState(
     conversationRef: string
   ): Promise<InternalConversationEnforcementState | null>;
+  reserveOutboundDispatch(input: OutboundDispatchReservation): Promise<OutboundDispatchReservationResult>;
+  completeOutboundDispatch(input: OutboundDispatchCompletion): Promise<void>;
+  getOutboundPolicy(conversationRef: string): Promise<{
+    approvedTemplates: Array<{ name: string; category: string; purpose: string; languageCode?: string; enabled: boolean }>;
+    consentedTemplateCategories: string[];
+    consentedTemplatePurposes: string[];
+  }>;
+  upsertApprovedTemplate(template: {
+    name: string;
+    category: string;
+    purpose: string;
+    languageCode: string;
+    enabled: boolean;
+  }): Promise<void>;
+  setConversationTemplateConsent(input: {
+    conversationRef: string;
+    categories: string[];
+    purposes: string[];
+    policyRevision: string;
+    updatedAt: string;
+  }): Promise<void>;
   configureRetention(policy: ConversationRetentionPolicy, now: string): Promise<void>;
   runRetention(now: string): Promise<ConversationRetentionResult>;
   deleteConversationData(conversationRef: string): Promise<ConversationDeletionResult>;
@@ -96,6 +117,35 @@ export type DurableConversationObjectStub = {
   pruneMessages(occurredBefore: string): Promise<number>;
   listConversations(query: ConversationListQuery): Promise<ConversationListResult>;
   getConversationHistory(query: ConversationHistoryQuery): Promise<ConversationHistoryResult | null>;
+};
+
+export type OutboundDispatchReservation = {
+  conversationRef: string;
+  kind: "free_form_reply" | "approved_template";
+  idempotencyKey: string;
+  requestFingerprint: string;
+  expectedPolicyRevision: string;
+  now: string;
+  notAfter?: string;
+};
+
+export type OutboundDispatchReservationResult =
+  | { status: "ready"; providerAccountRef: string; providerParticipantRef: string }
+  | { status: "duplicate"; messageRef: string; providerStatus: "accepted" | "queued" | "sent" }
+  | { status: "blocked"; reason: "state_changed" | "recipient_opted_out" | "automation_paused" | "window_closed" | "in_progress" };
+
+export type OutboundDispatchCompletion = {
+  idempotencyKey: string;
+  requestFingerprint: string;
+  conversationRef: string;
+  providerAccountRef: string;
+  providerParticipantRef: string;
+  messageRef: string;
+  providerStatus: "accepted" | "queued" | "sent";
+  kind: "text" | "template";
+  text?: string;
+  templateName?: string;
+  occurredAt: string;
 };
 
 export type DurableConversationNamespace = {
@@ -423,6 +473,193 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     };
   }
 
+  async reserveOutboundDispatch(input: OutboundDispatchReservation): Promise<OutboundDispatchReservationResult> {
+    validateDispatchInput(input);
+    this.assertInitialized();
+    const existing = this.ctx.storage.sql.exec<{
+      request_fingerprint: string;
+      status: "reserved" | "sent";
+      message_ref: string | null;
+      provider_status: "accepted" | "queued" | "sent" | null;
+    }>(
+      `SELECT request_fingerprint, status, message_ref, provider_status
+       FROM outbound_dispatches WHERE idempotency_key = ?`,
+      input.idempotencyKey
+    ).toArray()[0];
+    if (existing) {
+      if (existing.request_fingerprint !== input.requestFingerprint) {
+        return { status: "blocked", reason: "state_changed" };
+      }
+      if (existing.status === "sent" && existing.message_ref && existing.provider_status) {
+        return { status: "duplicate", messageRef: existing.message_ref, providerStatus: existing.provider_status };
+      }
+      return { status: "blocked", reason: "in_progress" };
+    }
+    const conversation = this.ctx.storage.sql.exec<InternalConversationRow>(
+      "SELECT * FROM conversations WHERE conversation_ref = ?",
+      input.conversationRef
+    ).toArray()[0];
+    if (!conversation || conversation.policy_revision !== input.expectedPolicyRevision) {
+      return { status: "blocked", reason: "state_changed" };
+    }
+    if (conversation.recipient_opted_out === 1) return { status: "blocked", reason: "recipient_opted_out" };
+    if (conversation.automation_paused === 1) return { status: "blocked", reason: "automation_paused" };
+    if (input.kind === "free_form_reply") {
+      if (!input.notAfter || input.now >= input.notAfter ||
+          !conversation.last_verified_user_inbound_at ||
+          input.now >= new Date(Date.parse(conversation.last_verified_user_inbound_at) + 24 * 60 * 60 * 1000).toISOString()) {
+        return { status: "blocked", reason: "window_closed" };
+      }
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO outbound_dispatches
+       (idempotency_key, request_fingerprint, conversation_ref, kind, status, reserved_at)
+       VALUES (?, ?, ?, ?, 'reserved', ?)`,
+      input.idempotencyKey,
+      input.requestFingerprint,
+      input.conversationRef,
+      input.kind,
+      input.now
+    );
+    return {
+      status: "ready",
+      providerAccountRef: conversation.provider_account_ref,
+      providerParticipantRef: conversation.provider_participant_ref
+    };
+  }
+
+  async completeOutboundDispatch(input: OutboundDispatchCompletion): Promise<void> {
+    const reservation = this.ctx.storage.sql.exec<{ request_fingerprint: string; status: string }>(
+      "SELECT request_fingerprint, status FROM outbound_dispatches WHERE idempotency_key = ?",
+      input.idempotencyKey
+    ).toArray()[0];
+    if (!reservation || reservation.status !== "reserved" || reservation.request_fingerprint !== input.requestFingerprint) {
+      throw new Error("Outbound reservation is unavailable");
+    }
+    await this.ingestMessage({
+      conversationRef: input.conversationRef,
+      providerAccountRef: input.providerAccountRef,
+      providerParticipantRef: input.providerParticipantRef,
+      messageRef: input.messageRef,
+      direction: "outbound",
+      kind: input.kind,
+      ...(input.text ? { text: input.text } : {}),
+      ...(input.templateName ? { templateName: input.templateName } : {}),
+      occurredAt: input.occurredAt,
+      status: input.providerStatus === "queued" ? "accepted" : input.providerStatus
+    });
+    this.ctx.storage.sql.exec(
+      `UPDATE outbound_dispatches SET status = 'sent', message_ref = ?, provider_status = ?, completed_at = ?
+       WHERE idempotency_key = ? AND request_fingerprint = ? AND status = 'reserved'`,
+      input.messageRef,
+      input.providerStatus,
+      input.occurredAt,
+      input.idempotencyKey,
+      input.requestFingerprint
+    );
+  }
+
+  async getOutboundPolicy(conversationRef: string) {
+    if (!conversationRef || conversationRef.length > 200) throw new Error("Invalid conversation reference");
+    this.assertInitialized();
+    const templates = this.ctx.storage.sql.exec<{
+      name: string;
+      category: string;
+      purpose: string;
+      language_code: string;
+      enabled: number;
+    }>(
+      "SELECT name, category, purpose, language_code, enabled FROM approved_templates ORDER BY name"
+    ).toArray();
+    const consents = this.ctx.storage.sql.exec<{ consent_type: "category" | "purpose"; consent_value: string }>(
+      `SELECT consent_type, consent_value FROM conversation_template_consents
+       WHERE conversation_ref = ? ORDER BY consent_type, consent_value`,
+      conversationRef
+    ).toArray();
+    return {
+      approvedTemplates: templates.map((template) => ({
+        name: template.name,
+        category: template.category,
+        purpose: template.purpose,
+        languageCode: template.language_code,
+        enabled: template.enabled === 1
+      })),
+      consentedTemplateCategories: consents.filter((item) => item.consent_type === "category").map((item) => item.consent_value),
+      consentedTemplatePurposes: consents.filter((item) => item.consent_type === "purpose").map((item) => item.consent_value)
+    };
+  }
+
+  async upsertApprovedTemplate(template: {
+    name: string;
+    category: string;
+    purpose: string;
+    languageCode: string;
+    enabled: boolean;
+  }): Promise<void> {
+    this.assertInitialized();
+    for (const value of [template.name, template.category, template.purpose, template.languageCode]) {
+      if (!/^[A-Za-z0-9_.-]{1,128}$/u.test(value)) throw new Error("Invalid template policy value");
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO approved_templates (name, category, purpose, language_code, enabled)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET category = excluded.category, purpose = excluded.purpose,
+       language_code = excluded.language_code, enabled = excluded.enabled`,
+      template.name,
+      template.category,
+      template.purpose,
+      template.languageCode,
+      Number(template.enabled)
+    );
+  }
+
+  async setConversationTemplateConsent(input: {
+    conversationRef: string;
+    categories: string[];
+    purposes: string[];
+    policyRevision: string;
+    updatedAt: string;
+  }): Promise<void> {
+    this.assertInitialized();
+    parseCanonicalIso(input.updatedAt, "consent update time");
+    if (!input.conversationRef || !input.policyRevision || input.categories.length > 20 || input.purposes.length > 20) {
+      throw new Error("Invalid template consent policy");
+    }
+    const conversation = this.ctx.storage.sql.exec<{ conversation_ref: string }>(
+      "SELECT conversation_ref FROM conversations WHERE conversation_ref = ?",
+      input.conversationRef
+    ).toArray()[0];
+    if (!conversation) throw new Error("Conversation is unavailable");
+    const values = [
+      ...new Set(input.categories.map((value) => `category\u0000${value}`)),
+      ...new Set(input.purposes.map((value) => `purpose\u0000${value}`))
+    ];
+    for (const entry of values) {
+      const value = entry.slice(entry.indexOf("\u0000") + 1);
+      if (!/^[A-Za-z0-9_.-]{1,128}$/u.test(value)) throw new Error("Invalid consent policy value");
+    }
+    this.ctx.storage.sql.exec(
+      "DELETE FROM conversation_template_consents WHERE conversation_ref = ?",
+      input.conversationRef
+    );
+    for (const entry of values) {
+      const [type, value] = entry.split("\u0000");
+      this.ctx.storage.sql.exec(
+        `INSERT INTO conversation_template_consents (conversation_ref, consent_type, consent_value)
+         VALUES (?, ?, ?)`,
+        input.conversationRef,
+        type,
+        value
+      );
+    }
+    this.ctx.storage.sql.exec(
+      "UPDATE conversations SET policy_revision = ?, updated_at = ? WHERE conversation_ref = ?",
+      input.policyRevision,
+      input.updatedAt,
+      input.conversationRef
+    );
+  }
+
   async pruneMessages(occurredBefore: string): Promise<number> {
     parseCanonicalIso(occurredBefore, "retention cutoff");
     this.assertInitialized();
@@ -556,9 +793,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
         "SELECT COALESCE(MAX(id), 0) AS version FROM _sql_schema_migrations"
       )
       .one().version;
-    if (currentVersion >= 1) return;
-
-    this.ctx.storage.sql.exec(`
+    if (currentVersion < 1) this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -601,6 +836,37 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       );
       INSERT INTO _sql_schema_migrations (id) VALUES (1);
     `);
+    if (currentVersion < 2) this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS outbound_dispatches (
+        idempotency_key TEXT PRIMARY KEY,
+        request_fingerprint TEXT NOT NULL,
+        conversation_ref TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('free_form_reply', 'approved_template')),
+        status TEXT NOT NULL CHECK(status IN ('reserved', 'sent')),
+        reserved_at TEXT NOT NULL,
+        completed_at TEXT,
+        message_ref TEXT,
+        provider_status TEXT
+      );
+      INSERT INTO _sql_schema_migrations (id) VALUES (2);
+    `);
+    if (currentVersion < 3) this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS approved_templates (
+        name TEXT PRIMARY KEY,
+        category TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        language_code TEXT NOT NULL,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0, 1))
+      );
+      CREATE TABLE IF NOT EXISTS conversation_template_consents (
+        conversation_ref TEXT NOT NULL,
+        consent_type TEXT NOT NULL CHECK(consent_type IN ('category', 'purpose')),
+        consent_value TEXT NOT NULL,
+        PRIMARY KEY (conversation_ref, consent_type, consent_value),
+        FOREIGN KEY(conversation_ref) REFERENCES conversations(conversation_ref)
+      );
+      INSERT INTO _sql_schema_migrations (id) VALUES (3);
+    `);
   }
 
   private assertInitialized(): void {
@@ -609,6 +875,14 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       .one();
     if (row.count !== 1) throw new Error("Conversation store is not tenant-initialized");
   }
+}
+
+function validateDispatchInput(input: OutboundDispatchReservation): void {
+  if (!/^[A-Za-z0-9._:-]{8,128}$/u.test(input.idempotencyKey)) throw new Error("Invalid idempotency key");
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(input.requestFingerprint)) throw new Error("Invalid request fingerprint");
+  parseCanonicalIso(input.now, "dispatch time");
+  if (input.notAfter) parseCanonicalIso(input.notAfter, "dispatch deadline");
+  if (!input.conversationRef || !input.expectedPolicyRevision) throw new Error("Invalid outbound dispatch");
 }
 
 export function createDurableConversationReader(

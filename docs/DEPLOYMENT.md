@@ -1,74 +1,127 @@
-# Deployment Handoff
+# Closed-pilot deployment
 
-This app can run anywhere that supports Node.js 20+ and HTTPS ingress.
+The pilot runtime is a Cloudflare Worker with three SQLite Durable Object classes:
 
-## Required Secrets
+- `WhatsAppConversationDurableObject` stores tenant-isolated structured history, policy state, retention metadata, and outbound idempotency reservations.
+- `WhatsAppPilotInstallationDurableObject` stores one-time invitations, encrypted Meta installations, WABA routing, and the one-internal/three-client cohort ceiling.
+- `WhatsAppOAuthStateDurableObject` stores one-time authorization codes, rotating refresh tokens, revocations, and pilot browser sessions.
+
+The Worker remains fail-closed until all provider and OAuth configuration is present. The default module does not expose tenant data without a valid, resource-bound access token.
+
+## Preflight
 
 ```text
-TWILIO_ACCOUNT_SID
-TWILIO_AUTH_TOKEN
-TWILIO_WHATSAPP_FROM
-TWILIO_ADMIN_REVIEW_TO
-```
-
-For local development, put these in `.env`. For production, set them in the hosting platform's secret manager.
-
-## Commands
-
-```bash
 npm ci
-npm run verify
-npm run check:env
-npm run build
-npm start
+npm run verify:mcp
+node ./node_modules/wrangler/bin/wrangler.js types --config wrangler.mcp.jsonc
+node ./node_modules/wrangler/bin/wrangler.js deploy --dry-run --config wrangler.mcp.jsonc
 ```
 
-For local-Codex decision mode, also set:
+Use the checked-in Wrangler configuration for non-secret settings. Set `PUBLIC_ORIGIN` to the exact HTTPS Worker origin. The resource identifier, authorization issuer, JWT audience, webhook URL, and ChatGPT MCP URL all use that origin.
+
+## Required Worker configuration
+
+Keep these non-secret values in `wrangler.mcp.jsonc` or the equivalent deployment environment:
 
 ```text
-AGENT_DECISION_MODE=local_cli
-AGENT_LOCAL_CLI_COMMAND=<command that reads JSON stdin and prints AgentDecision JSON>
-AGENT_LOCAL_CLI_TIMEOUT_MS=120000
+PUBLIC_ORIGIN
+META_APP_ID
+OAUTH_CLIENT_ID
+OAUTH_REDIRECT_URI
+OAUTH_SIGNING_KEY_ID
 ```
 
-Use `AGENT_DECISION_MODE=deterministic` when the local Codex command is not available.
-
-Webhook processing events are appended to:
+Store these values as Wrangler secrets:
 
 ```text
-WEBHOOK_EVENT_LOG_PATH=.runtime/webhook-events.jsonl
-INBOUND_IDLE_BUFFER_MS=5000
+META_APP_SECRET
+META_EMBEDDED_SIGNUP_CONFIG_ID
+META_WEBHOOK_VERIFY_TOKEN
+CONVERSATION_REF_SECRET
+INSTALLATION_ENCRYPTION_KEY
+PILOT_ADMIN_TOKEN
+OAUTH_SIGNING_PRIVATE_JWK
+OAUTH_SIGNING_PUBLIC_JWK
 ```
 
-Use a persistent volume or managed log sink in production if these records should survive deploys/restarts. The log contains customer phone numbers and message bodies.
+Generate independent high-entropy values for the webhook verification token, conversation-reference HMAC key, installation encryption key, pilot administrator token, and OAuth RSA signing key. Do not reuse the Meta App Secret and do not put any value in Git, dashboard HTML, build output, command history, or invitation messages.
 
-## Health Check
+The default OpenAI client configuration is:
 
 ```text
-GET /health
+OAUTH_CLIENT_ID=https://chatgpt.com/oauth/client.json
+OAUTH_REDIRECT_URI=https://chatgpt.com/connector_platform_oauth_redirect
 ```
 
-Expected:
+These defaults require authorization-server issuer identification and CIMD support, both implemented by the Worker. Replace them only with the exact values shown by the OpenAI app-management surface for this connection.
 
-```json
-{"ok":true,"service":"automated-co-whatsapp-ai-poc"}
-```
+## Meta configuration
 
-## Twilio Webhook
-
-Configure Twilio WhatsApp inbound webhook:
+Create one WhatsApp Embedded Signup configuration for the closed pilot. Configure the callback origin to `PUBLIC_ORIGIN` and the WhatsApp webhook callback to:
 
 ```text
-POST https://YOUR-PUBLIC-HOST/webhooks/twilio/whatsapp
+https://<public-origin>/webhooks/meta/whatsapp
 ```
 
-When the agent routes a conversation to human review, the app sends an internal WhatsApp alert to `TWILIO_ADMIN_REVIEW_TO`.
+Use `META_WEBHOOK_VERIFY_TOKEN` as the webhook verification token and subscribe the required WhatsApp message fields. The onboarding callback exchanges Meta's short-lived authorization code server-side, verifies that the selected phone belongs to the selected WABA, subscribes the app, and encrypts the provider token before persistence.
 
-## Production Notes
+## Deploy and verify
 
-- Use a stable public HTTPS URL, not a Cloudflare quick tunnel.
-- Rotate trial credentials before production use.
-- Keep inventory read-only.
-- Add Twilio request signature validation before handling real production traffic.
-- Replace local JSONL logging with durable observability before production traffic.
-- Consider idempotency for retried Twilio webhooks before production traffic.
+```text
+node ./node_modules/wrangler/bin/wrangler.js deploy --config wrangler.mcp.jsonc
+```
+
+Verify, without exposing secrets:
+
+```text
+GET  /health
+GET  /.well-known/oauth-protected-resource
+GET  /.well-known/oauth-authorization-server
+GET  /.well-known/jwks.json
+POST /mcp
+```
+
+`/health` must report `pilotOnboardingConfigured`, `oauthConfigured`, `oauthVerifierConfigured`, and `outboundMessagingConfigured` as `true`. An unauthenticated MCP tool call must fail with `401` and a `WWW-Authenticate` resource-metadata challenge.
+
+## Invite and supervise a client
+
+Keep the administrator token in the process environment and create a one-time, 24-hour invitation:
+
+```text
+PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- invite https://<public-origin> <tenant-id> "<client label>" client
+```
+
+Send only the returned one-time invitation URL to the named pilot contact. The invite establishes both the Meta installation and a scoped browser session for the OAuth connection. The client should add `https://<public-origin>/mcp` to ChatGPT from the same browser session.
+
+Check installation state:
+
+```text
+PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- status https://<public-origin> <tenant-id>
+```
+
+Before a supervised send, verify the conversation exists, the customer-service window is open, and the reply is expected. Outside the window, enable only an exact Meta-approved template and record the recipient's category and purpose consent in the internal policy API. The MCP performs the same checks again atomically at dispatch time.
+
+## Disconnect and deletion
+
+Disconnect revokes the tenant's pilot browser sessions, authorization codes, refresh tokens, WABA routing, and Meta webhook subscription. Existing access tokens are additionally denied because the installation is no longer connected.
+
+```text
+PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- disconnect https://<public-origin> <tenant-id>
+PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- delete https://<public-origin> <tenant-id>
+```
+
+Deletion requires a completed disconnect and deletes the tenant installation plus all retained conversation data. Provider-side deletion obligations, audit retention, and client communication remain an operator checklist item.
+
+## Staging acceptance
+
+- Durable Object, OAuth + PKCE, webhook routing, policy, retention, and idempotency tests pass.
+- The deployment dry run succeeds with no unintended bindings.
+- Live discovery documents return the exact public origin.
+- Invalid and replayed invitations fail closed.
+- A signed Meta webhook is routed only to its WABA-bound tenant.
+- A read-only MCP history call works for the connected tenant and cannot read another tenant.
+- One in-window reply succeeds once; the same idempotency key returns the original result.
+- A reply at or after the 24-hour boundary returns `WHATSAPP_CUSTOMER_SERVICE_WINDOW_CLOSED` and sends nothing.
+- Disconnect invalidates OAuth and provider access; deletion removes retained tenant data.
+
+Do not claim a production-ready or public marketplace state from this checklist. Meta Tech Provider/access verification, production phone/payment setup, privacy/legal review, domain hardening, and OpenAI submission are separate gates.

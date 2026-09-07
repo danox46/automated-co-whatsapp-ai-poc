@@ -2,11 +2,17 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "automated-co-whatsapp-mcp",
   "main": "src/mcp/persistentWorker.ts",
-  "compatibility_date": "2026-09-05",
+  "compatibility_date": "2026-09-07",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "vars": {
-    "META_TENANT_ID": "local-development",
+    "PUBLIC_ORIGIN": "https://automated-co-whatsapp-mcp.danielx9.workers.dev",
+    "META_APP_ID": "922129513848674",
+    "META_GRAPH_API_VERSION": "v25.0",
+    "META_EMBEDDED_SIGNUP_SESSION_VERSION": "4",
+    "OAUTH_SIGNING_KEY_ID": "wa-pilot-2026-09-07-1",
+    "OAUTH_CLIENT_ID": "https://chatgpt.com/oauth/client.json",
+    "OAUTH_REDIRECT_URI": "https://chatgpt.com/connector_platform_oauth_redirect",
     "CONVERSATION_MESSAGE_RETENTION_DAYS": "90",
     "CONVERSATION_INACTIVE_RETENTION_DAYS": "365",
     "CONVERSATION_PENDING_STATUS_RETENTION_DAYS": "7",
@@ -17,6 +23,14 @@
       {
         "name": "CONVERSATIONS",
         "class_name": "WhatsAppConversationDurableObject"
+      },
+      {
+        "name": "PILOT_INSTALLATIONS",
+        "class_name": "WhatsAppPilotInstallationDurableObject"
+      },
+      {
+        "name": "OAUTH_STATE",
+        "class_name": "WhatsAppOAuthStateDurableObject"
       }
     ]
   },
@@ -24,6 +38,18 @@
     {
       "tag": "conversation-history-v1",
       "new_sqlite_classes": ["WhatsAppConversationDurableObject"]
+    },
+    {
+      "tag": "pilot-installations-v1",
+      "new_sqlite_classes": ["WhatsAppPilotInstallationDurableObject"]
+    },
+    {
+      "tag": "oauth-state-v1",
+      "new_sqlite_classes": ["WhatsAppOAuthStateDurableObject"]
     }
-  ]
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
 }

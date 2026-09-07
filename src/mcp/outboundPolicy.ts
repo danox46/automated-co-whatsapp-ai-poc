@@ -7,6 +7,7 @@ export type WhatsAppApprovedTemplate = {
   name: string;
   category: string;
   purpose: string;
+  languageCode?: string;
   enabled: boolean;
 };
 
@@ -25,6 +26,7 @@ export type WhatsAppProtectionCode =
   | "WHATSAPP_SEND_SCOPE_REQUIRED"
   | "WHATSAPP_CONVERSATION_NOT_AVAILABLE"
   | "WHATSAPP_CONVERSATION_STATE_CHANGED"
+  | "WHATSAPP_SEND_IN_PROGRESS"
   | "WHATSAPP_RECIPIENT_OPTED_OUT"
   | "WHATSAPP_AUTOMATION_PAUSED"
   | "WHATSAPP_NO_VERIFIED_USER_MESSAGE"
@@ -62,6 +64,8 @@ export type WhatsAppProviderResult = {
   status: "accepted" | "queued" | "sent";
 };
 
+export type WhatsAppProviderDispatchResult = WhatsAppProviderResult | WhatsAppProtectionDecision;
+
 export type WhatsAppMessagingCapability = {
   guaranteesDurableIdempotency: boolean;
   resolveConversation(
@@ -83,7 +87,7 @@ export type WhatsAppMessagingCapability = {
     idempotencyKey: string;
     notAfter: string;
     expectedPolicyRevision: string;
-  }): Promise<WhatsAppProviderResult>;
+  }): Promise<WhatsAppProviderDispatchResult>;
   dispatchTemplateWithPolicy(input: {
     principal: WhatsAppMcpPrincipal;
     conversation: ResolvedWhatsAppConversation;
@@ -91,7 +95,7 @@ export type WhatsAppMessagingCapability = {
     variables: readonly string[];
     idempotencyKey: string;
     expectedPolicyRevision: string;
-  }): Promise<WhatsAppProviderResult>;
+  }): Promise<WhatsAppProviderDispatchResult>;
   now?: () => Date;
 };
 
@@ -305,17 +309,17 @@ export async function dispatchFreeFormReply(
     new Date(finalResolution.lastVerifiedUserInboundAt as string).getTime() + WHATSAPP_CUSTOMER_SERVICE_WINDOW_MS
   ).toISOString();
 
-  return {
-    ok: true,
-    ...(await capability.dispatchReplyWithPolicy({
+  const providerResult = await capability.dispatchReplyWithPolicy({
       principal,
       conversation: finalResolution,
       text: input.text,
       idempotencyKey: input.idempotencyKey,
       notAfter,
       expectedPolicyRevision: finalResolution.policyRevision
-    }))
-  };
+    });
+  return "allowed" in providerResult
+    ? { ok: false, error: providerResult }
+    : { ok: true, ...providerResult };
 }
 
 export async function dispatchApprovedTemplate(
@@ -351,15 +355,15 @@ export async function dispatchApprovedTemplate(
   });
   if (!contentDecision.allowed) return { ok: false, error: contentBlock(contentDecision.message) };
 
-  return {
-    ok: true,
-    ...(await capability.dispatchTemplateWithPolicy({
+  const providerResult = await capability.dispatchTemplateWithPolicy({
       principal,
       conversation: finalResolution,
       templateName: input.templateName,
       variables: input.variables,
       idempotencyKey: input.idempotencyKey,
       expectedPolicyRevision: finalResolution.policyRevision
-    }))
-  };
+    });
+  return "allowed" in providerResult
+    ? { ok: false, error: providerResult }
+    : { ok: true, ...providerResult };
 }

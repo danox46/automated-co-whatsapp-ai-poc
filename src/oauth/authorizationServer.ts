@@ -27,7 +27,7 @@ export type OAuthAuthorizedSession = {
   approvedScopes: ReadonlySet<string>;
 };
 
-type AuthorizationCodeRecord = OAuthAuthorizedSession & {
+export type AuthorizationCodeRecord = OAuthAuthorizedSession & {
   codeHash: string;
   clientId: string;
   redirectUri: string;
@@ -38,7 +38,7 @@ type AuthorizationCodeRecord = OAuthAuthorizedSession & {
   expiresAt: number;
 };
 
-type RefreshTokenRecord = OAuthAuthorizedSession & {
+export type RefreshTokenRecord = OAuthAuthorizedSession & {
   tokenHash: string;
   clientId: string;
   resource: string;
@@ -394,7 +394,9 @@ async function readForm(request: Request): Promise<URLSearchParams | null> {
   if (length > 64 * 1024 || !request.headers.get("content-type")?.includes("application/x-www-form-urlencoded")) {
     return null;
   }
-  const text = await request.text();
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > 64 * 1024) return null;
+  const text = new TextDecoder().decode(bytes);
   return text.length <= 64 * 1024 ? new URLSearchParams(text) : null;
 }
 

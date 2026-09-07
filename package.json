@@ -22,9 +22,11 @@
     "agent:mock": "node ./node_modules/tsx/dist/cli.mjs src/local/mockAgentCli.ts",
     "agent:codex": "node ./node_modules/tsx/dist/cli.mjs src/local/codexAgentCli.ts",
     "demo": "node ./node_modules/tsx/dist/cli.mjs src/local/demo.ts",
+    "pilot:admin": "node scripts/pilot-admin.mjs",
     "test:mcp-policy": "node ./node_modules/vitest/vitest.mjs run src/mcp",
     "test:meta-webhook": "node ./node_modules/vitest/vitest.mjs run src/meta/webhook.test.ts",
-    "verify:mcp": "npm run typecheck && npm run test:mcp-policy && npm run test:meta-webhook && npm run build"
+    "test:workers": "node ./node_modules/vitest/vitest.mjs run --config vitest.cloudflare.config.ts",
+    "verify:mcp": "npm run typecheck && npm test && npm run test:workers && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
@@ -34,12 +36,15 @@
     "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.5",
+    "@cloudflare/workers-types": "^5.20260907.1",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.5",
     "cloudflared": "^0.7.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "wrangler": "^4.129.1"
   },
   "engines": {
     "node": ">=20"

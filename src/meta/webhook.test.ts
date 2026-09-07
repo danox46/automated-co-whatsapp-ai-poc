@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   handleMetaWhatsAppWebhook,
+  metaWebhookWabaIds,
   META_WHATSAPP_WEBHOOK_PATH,
   type MetaWebhookEnv
 } from "./webhook.js";
@@ -126,6 +127,45 @@ describe("Meta WhatsApp webhook", () => {
     expect(JSON.stringify(history)).not.toContain("provider-account-123");
     expect(JSON.stringify(history)).not.toContain("recipient-456");
     expect(JSON.stringify(history)).not.toContain("must-not-be-stored");
+  });
+
+  it("resolves the tenant from the signed WABA envelope before persistence", async () => {
+    const store = new InMemoryWhatsAppConversationStore();
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "100200300",
+        changes: [{ field: "messages", value: {
+          metadata: { phone_number_id: "400500600" },
+          contacts: [{ wa_id: "573001112233" }],
+          messages: [{
+            from: "573001112233",
+            id: "wamid.tenant-route",
+            timestamp: "1788606000",
+            type: "text",
+            text: { body: "Tenant routed" }
+          }]
+        } }]
+      }]
+    });
+    expect(metaWebhookWabaIds(JSON.parse(body))).toEqual(["100200300"]);
+    const response = await handleMetaWhatsAppWebhook(new Request(
+      new URL(META_WHATSAPP_WEBHOOK_PATH, origin),
+      { method: "POST", headers: { "x-hub-signature-256": sign(body) }, body }
+    ), env, async (payload) => metaWebhookWabaIds(payload)[0] === "100200300" ? {
+      tenantId: "tenant-routed",
+      conversationRefSecret: "fixed-conversation-reference-secret",
+      writer: store
+    } : null);
+
+    expect(response?.status).toBe(200);
+    const result = await store.listConversations({
+      subject: "pilot",
+      tenantId: "tenant-routed",
+      audience: origin,
+      scopes: new Set(["whatsapp.conversations.read"])
+    }, {});
+    expect(result.conversations).toHaveLength(1);
   });
 
   it("returns a retryable error instead of acknowledging a configured persistence failure", async () => {

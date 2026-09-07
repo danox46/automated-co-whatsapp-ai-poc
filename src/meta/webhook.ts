@@ -85,7 +85,7 @@ async function handleVerification(request: Request, env: MetaWebhookEnv): Promis
 async function handleEvent(
   request: Request,
   env: MetaWebhookEnv,
-  persistence?: MetaConversationPersistence
+  persistence?: MetaConversationPersistence | MetaConversationPersistenceResolver
 ): Promise<Response> {
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > MAX_WEBHOOK_BODY_BYTES) {
@@ -123,7 +123,10 @@ async function handleEvent(
 
   if (persistence) {
     try {
-      await persistMetaConversationEvents(payload, persistence);
+      const resolved = typeof persistence === "function"
+        ? await persistence(payload)
+        : persistence;
+      if (resolved) await persistMetaConversationEvents(payload, resolved);
     } catch {
       return Response.json(
         { received: false, retryable: true },
@@ -144,7 +147,7 @@ async function handleEvent(
 export async function handleMetaWhatsAppWebhook(
   request: Request,
   env: MetaWebhookEnv,
-  persistence?: MetaConversationPersistence
+  persistence?: MetaConversationPersistence | MetaConversationPersistenceResolver
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== META_WHATSAPP_WEBHOOK_PATH) return null;
@@ -156,6 +159,23 @@ export async function handleMetaWhatsAppWebhook(
     status: 405,
     headers: { ...noStoreHeaders(), Allow: "GET, POST" }
   });
+}
+
+export type MetaConversationPersistenceResolver = (
+  payload: unknown
+) => Promise<MetaConversationPersistence | null>;
+
+export function metaWebhookWabaIds(payload: unknown): string[] {
+  if (typeof payload !== "object" || payload === null) return [];
+  const entries = Array.isArray((payload as { entry?: unknown }).entry)
+    ? (payload as { entry: unknown[] }).entry
+    : [];
+  const ids = entries.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const id = (entry as { id?: unknown }).id;
+    return typeof id === "string" && /^\d{3,32}$/u.test(id) ? [id] : [];
+  });
+  return [...new Set(ids)];
 }
 
 export default {
