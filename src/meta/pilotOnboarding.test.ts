@@ -17,6 +17,17 @@ function createFixture() {
       nextInvite = `${nextInvite}x`;
       return token;
     },
+    async rotateInvite(input, now = new Date()) {
+      const pending = [...invites.entries()].find(([, invite]) =>
+        invite.tenantId === input.tenantId && invite.cohortRole === input.cohortRole && !invite.usedAt
+      );
+      if (!pending) throw new Error("missing pending invite");
+      pending[1].usedAt = now.toISOString();
+      const token = nextInvite;
+      invites.set(token, { ...input, createdAt: now.toISOString() });
+      nextInvite = `${nextInvite}x`;
+      return token;
+    },
     async getInvite(token, now = new Date()) {
       const invite = invites.get(token);
       return invite && !invite.usedAt && invite.expiresAt > now.toISOString() ? { ...invite } : null;
@@ -224,5 +235,30 @@ describe("closed-pilot onboarding", () => {
     ));
     expect(deletion?.status).toBe(409);
     expect(fixture.deleteConversationData).not.toHaveBeenCalled();
+  });
+
+  it("rotates an unused invitation without allocating another cohort seat", async () => {
+    const fixture = createFixture();
+    const originalResponse = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/invitations",
+      "POST",
+      { tenantId: "pilot-rotate", label: "Pilot Rotate", cohortRole: "client", expiresInHours: 24 }
+    ));
+    const original = await originalResponse?.json() as { invitationUrl: string };
+
+    const rotatedResponse = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/invitations/rotate",
+      "POST",
+      { tenantId: "pilot-rotate", label: "Pilot Rotate", cohortRole: "client", expiresInHours: 24 }
+    ));
+    expect(rotatedResponse?.status).toBe(201);
+    await expect(rotatedResponse?.json()).resolves.toMatchObject({
+      ok: true,
+      tenantId: "pilot-rotate",
+      rotated: true
+    });
+
+    const oldInvitation = await fixture.handler.fetch(new Request(original.invitationUrl));
+    expect(oldInvitation?.status).toBe(410);
   });
 });

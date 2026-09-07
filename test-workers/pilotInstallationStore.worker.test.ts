@@ -265,4 +265,24 @@ describe("pilot installation Durable Objects", () => {
       expiresAt
     }, now)).rejects.toThrow("Pilot internal cohort limit reached");
   });
+
+  it("rotates a pending invitation and invalidates the previous token", async () => {
+    const registry = createPilotInstallationRegistry(
+      env.PILOT_INSTALLATIONS,
+      `cohort:rotation:${crypto.randomUUID()}`
+    );
+    const now = new Date("2026-09-07T12:00:00.000Z");
+    const input = {
+      tenantId: `rotation_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
+      label: "Rotated client invitation",
+      cohortRole: "client" as const,
+      expiresAt: "2026-09-08T12:00:00.000Z"
+    };
+    const original = await registry.createInvite(input, now);
+    const replacement = await registry.rotateInvite(input, new Date("2026-09-07T12:05:00.000Z"));
+
+    await expect(registry.getInvite(original, now)).resolves.toBeNull();
+    await expect(registry.getInvite(replacement, now)).resolves.toMatchObject({ tenantId: input.tenantId });
+    await expect(registry.createInvite(input, now)).rejects.toThrow("Pilot tenant already has a cohort seat");
+  });
 });

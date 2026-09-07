@@ -59,10 +59,18 @@ type InstallationRow = {
 };
 type RouteRow = { tenant_id: string };
 type CountRow = { count: number };
+type CohortSeatRow = {
+  tenant_id: string;
+  role: "internal" | "client";
+  status: "invited" | "connected";
+  expires_at: string;
+  invite_hash: string | null;
+};
 
 export type PilotInstallationObjectStub = {
   createInvite(record: PilotInviteRecord): Promise<void>;
   getInvite(now: string): Promise<PilotInviteRecord | null>;
+  revokeInvite(revokedAt: string): Promise<void>;
   beginSession(stateHash: string, expiresAt: string, now: string): Promise<void>;
   consumeSession(stateHash: string, now: string): Promise<PilotInviteRecord | null>;
   markInviteUsed(usedAt: string): Promise<void>;
@@ -77,8 +85,16 @@ export type PilotInstallationObjectStub = {
     tenantId: string,
     role: "internal" | "client",
     expiresAt: string,
-    now: string
+    now: string,
+    inviteHash: string
   ): Promise<{ ok: true } | { ok: false; code: "TENANT_EXISTS" | "COHORT_LIMIT" }>;
+  rotatePilotInvite(
+    tenantId: string,
+    role: "internal" | "client",
+    expiresAt: string,
+    now: string,
+    inviteHash: string
+  ): Promise<{ ok: true; previousInviteHash: string | null } | { ok: false; code: "NOT_PENDING" | "ROLE_MISMATCH" }>;
   markPilotSeatConnected(tenantId: string, connectedAt: string): Promise<void>;
   releasePilotSeat(tenantId: string): Promise<void>;
 };
@@ -121,6 +137,12 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     const row = this.ctx.storage.sql.exec<InviteRow>("SELECT * FROM invite LIMIT 1").toArray()[0];
     if (!row || row.used_at || row.expires_at <= now) return null;
     return mapInvite(row);
+  }
+
+  async revokeInvite(revokedAt: string): Promise<void> {
+    assertCanonicalIso(revokedAt);
+    this.ctx.storage.sql.exec("UPDATE invite SET used_at = ? WHERE used_at IS NULL", revokedAt);
+    this.ctx.storage.sql.exec("DELETE FROM sessions");
   }
 
   async beginSession(stateHash: string, expiresAt: string, now: string): Promise<void> {
@@ -214,11 +236,13 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     tenantId: string,
     role: "internal" | "client",
     expiresAt: string,
-    now: string
+    now: string,
+    inviteHash: string
   ): Promise<{ ok: true } | { ok: false; code: "TENANT_EXISTS" | "COHORT_LIMIT" }> {
     validateTenantId(tenantId);
     assertCanonicalIso(expiresAt);
     assertCanonicalIso(now);
+    validateHash(inviteHash);
     this.ctx.storage.sql.exec(
       "DELETE FROM cohort_seats WHERE status = 'invited' AND expires_at <= ?",
       now
@@ -235,13 +259,44 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     ).one().count;
     if (count >= limit) return { ok: false, code: "COHORT_LIMIT" };
     this.ctx.storage.sql.exec(
-      `INSERT INTO cohort_seats (tenant_id, role, status, expires_at, connected_at)
-       VALUES (?, ?, 'invited', ?, NULL)`,
+      `INSERT INTO cohort_seats (tenant_id, role, status, expires_at, connected_at, invite_hash)
+       VALUES (?, ?, 'invited', ?, NULL, ?)`,
       tenantId,
       role,
-      expiresAt
+      expiresAt,
+      inviteHash
     );
     return { ok: true };
+  }
+
+  async rotatePilotInvite(
+    tenantId: string,
+    role: "internal" | "client",
+    expiresAt: string,
+    now: string,
+    inviteHash: string
+  ): Promise<{ ok: true; previousInviteHash: string | null } | { ok: false; code: "NOT_PENDING" | "ROLE_MISMATCH" }> {
+    validateTenantId(tenantId);
+    assertCanonicalIso(expiresAt);
+    assertCanonicalIso(now);
+    validateHash(inviteHash);
+    this.ctx.storage.sql.exec(
+      "DELETE FROM cohort_seats WHERE status = 'invited' AND expires_at <= ?",
+      now
+    );
+    const existing = this.ctx.storage.sql.exec<CohortSeatRow>(
+      "SELECT tenant_id, role, status, expires_at, invite_hash FROM cohort_seats WHERE tenant_id = ?",
+      tenantId
+    ).toArray()[0];
+    if (!existing || existing.status !== "invited") return { ok: false, code: "NOT_PENDING" };
+    if (existing.role !== role) return { ok: false, code: "ROLE_MISMATCH" };
+    this.ctx.storage.sql.exec(
+      "UPDATE cohort_seats SET expires_at = ?, invite_hash = ? WHERE tenant_id = ? AND status = 'invited'",
+      expiresAt,
+      inviteHash,
+      tenantId
+    );
+    return { ok: true, previousInviteHash: existing.invite_hash };
   }
 
   async markPilotSeatConnected(tenantId: string, connectedAt: string): Promise<void> {
@@ -294,9 +349,14 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
         role TEXT NOT NULL CHECK(role IN ('internal', 'client')),
         status TEXT NOT NULL CHECK(status IN ('invited', 'connected')),
         expires_at TEXT NOT NULL,
-        connected_at TEXT
+        connected_at TEXT,
+        invite_hash TEXT
       );
     `);
+    const cohortColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(cohort_seats)").toArray();
+    if (!cohortColumns.some((column) => column.name === "invite_hash")) {
+      this.ctx.storage.sql.exec("ALTER TABLE cohort_seats ADD COLUMN invite_hash TEXT");
+    }
   }
 }
 
@@ -319,7 +379,8 @@ export function createPilotInstallationRegistry(
         input.tenantId,
         input.cohortRole,
         input.expiresAt,
-        createdAt
+        createdAt,
+        hash
       );
       if (!reservation.ok) {
         throw new Error(reservation.code === "COHORT_LIMIT"
@@ -331,6 +392,36 @@ export function createPilotInstallationRegistry(
       } catch (error) {
         await cohort.releasePilotSeat(input.tenantId);
         throw error;
+      }
+      return rawToken;
+    },
+
+    async rotateInvite(input: {
+      tenantId: string;
+      label: string;
+      cohortRole: "internal" | "client";
+      expiresAt: string;
+    }, now = new Date()): Promise<string> {
+      const rawToken = randomBase64Url(32);
+      const hash = await sha256Base64Url(rawToken);
+      const createdAt = now.toISOString();
+      const invite = namespace.getByName(`invite:${hash}`);
+      await invite.createInvite({ ...input, createdAt });
+      const rotation = await namespace.getByName(cohortObjectName).rotatePilotInvite(
+        input.tenantId,
+        input.cohortRole,
+        input.expiresAt,
+        createdAt,
+        hash
+      );
+      if (!rotation.ok) {
+        await invite.revokeInvite(createdAt);
+        throw new Error(rotation.code === "ROLE_MISMATCH"
+          ? "Pilot invitation role cannot change during rotation"
+          : "Pilot tenant has no pending invitation to rotate");
+      }
+      if (rotation.previousInviteHash) {
+        await namespace.getByName(`invite:${rotation.previousInviteHash}`).revokeInvite(createdAt);
       }
       return rawToken;
     },

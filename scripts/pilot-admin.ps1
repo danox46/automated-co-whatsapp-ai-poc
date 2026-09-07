@@ -75,12 +75,36 @@ function Read-GenericCredentialSecret {
 $credentialTarget = 'AutomatedCo/WhatsAppMCP/PILOT_ADMIN_TOKEN'
 $adminSecret = Read-GenericCredentialSecret -Target $credentialTarget
 $scriptPath = Join-Path $PSScriptRoot 'pilot-admin.mjs'
+$nodeExecutable = (Get-Command node -ErrorAction SilentlyContinue).Source
+if (-not $nodeExecutable) {
+  $standardNodePath = if ($env:ProgramFiles) {
+    Join-Path $env:ProgramFiles 'nodejs\node.exe'
+  }
+  else {
+    'C:\Program Files\nodejs\node.exe'
+  }
+  if (Test-Path -LiteralPath $standardNodePath) {
+    $nodeExecutable = $standardNodePath
+  }
+}
+if (-not $nodeExecutable) {
+  throw 'Node.js is unavailable. Install Node.js 20 or newer before running pilot administration.'
+}
 $processExitCode = 1
 
 try {
   $env:PILOT_ADMIN_TOKEN = $adminSecret
-  & node $scriptPath @PilotArguments
+  $commandOutput = & $nodeExecutable $scriptPath @PilotArguments 2>&1
   $processExitCode = $LASTEXITCODE
+  if ($commandOutput) {
+    $renderedOutput = ($commandOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+    if ($processExitCode -eq 0) {
+      [Console]::Out.WriteLine($renderedOutput)
+    }
+    else {
+      [Console]::Error.WriteLine($renderedOutput)
+    }
+  }
 }
 finally {
   Remove-Item Env:PILOT_ADMIN_TOKEN -ErrorAction SilentlyContinue

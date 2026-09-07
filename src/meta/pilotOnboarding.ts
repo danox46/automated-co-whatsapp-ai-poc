@@ -55,6 +55,9 @@ export function createPilotOnboardingHandler(
       if (url.pathname === "/admin/pilot/invitations" && request.method === "POST") {
         return createInvitation(request);
       }
+      if (url.pathname === "/admin/pilot/invitations/rotate" && request.method === "POST") {
+        return createInvitation(request, true);
+      }
       const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect))?$/u.exec(url.pathname);
       if (installationMatch && request.method === "GET" && !installationMatch[2]) {
         return getInstallation(request, installationMatch[1]);
@@ -170,7 +173,7 @@ export function createPilotOnboardingHandler(
     }
   }
 
-  async function createInvitation(request: Request): Promise<Response> {
+  async function createInvitation(request: Request, rotate = false): Promise<Response> {
     if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
     const body = await readBoundedJson(request);
     const tenantId = readString(body?.tenantId);
@@ -190,15 +193,20 @@ export function createPilotOnboardingHandler(
     const expiresAt = new Date(now().getTime() + expiresInHours * 60 * 60 * 1000).toISOString();
     let token: string;
     try {
-      token = await dependencies.registry.createInvite({ tenantId, label, cohortRole, expiresAt }, now());
+      token = rotate
+        ? await dependencies.registry.rotateInvite({ tenantId, label, cohortRole, expiresAt }, now())
+        : await dependencies.registry.createInvite({ tenantId, label, cohortRole, expiresAt }, now());
     } catch {
-      return jsonError("PILOT_COHORT_LIMIT_REACHED", "The approved closed-pilot cohort has no available seat for this role.", 409);
+      return rotate
+        ? jsonError("PILOT_INVITATION_NOT_ROTATABLE", "No matching unused invitation is available to rotate for this tenant.", 409)
+        : jsonError("PILOT_COHORT_LIMIT_REACHED", "The approved closed-pilot cohort has no available seat for this role.", 409);
     }
     return Response.json({
       ok: true,
       tenantId,
       cohortRole,
       expiresAt,
+      rotated: rotate,
       invitationUrl: `${publicOrigin}/pilot/whatsapp/connect?invite=${encodeURIComponent(token)}`,
       disclosure: "This one-time link grants only the bounded WhatsApp pilot onboarding flow."
     }, { status: 201, headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" }) });

@@ -104,6 +104,14 @@ The wrapper removes the temporary process environment value when the command
 finishes. The invitation response itself is sensitive because it contains a
 one-time link; transmit only that URL to the exact named pilot contact.
 
+If an unused link is lost or suspected to be exposed, rotate it in place. This
+does not allocate another cohort seat, and any prior link tracked by the current
+runtime is revoked before the replacement is returned:
+
+```text
+npm run pilot:admin:windows -- reinvite https://<public-origin> <tenant-id> "<client label>" client
+```
+
 Send only the returned one-time invitation URL to the named pilot contact. The invite establishes both the Meta installation and a scoped browser session for the OAuth connection. The client should add `https://<public-origin>/mcp` to ChatGPT from the same browser session.
 
 Check installation state:

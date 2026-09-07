@@ -7,18 +7,21 @@ const [command, baseUrl, tenantId, ...rest] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
 if (!adminToken || !command || !baseUrl || !tenantId) {
-  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <invite|status|disconnect|delete> <https-origin> <tenant-id> [label] [internal|client]");
+  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <invite|reinvite|status|disconnect|delete> <https-origin> <tenant-id> [label] [internal|client]");
 }
 
 const origin = new URL(baseUrl).origin;
 const headers = { Authorization: `Bearer ${adminToken}` };
 let response;
 
-if (command === "invite") {
+if (command === "invite" || command === "reinvite") {
   const label = rest[0];
   const cohortRole = rest[1] ?? "client";
   if (!label) fail("The invite command requires a human-readable pilot label.");
-  response = await fetch(`${origin}/admin/pilot/invitations`, {
+  const invitationPath = command === "reinvite"
+    ? "/admin/pilot/invitations/rotate"
+    : "/admin/pilot/invitations";
+  response = await fetch(`${origin}${invitationPath}`, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({ tenantId, label, cohortRole, expiresInHours: 24 })
