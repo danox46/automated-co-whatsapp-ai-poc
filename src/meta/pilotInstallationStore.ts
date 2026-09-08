@@ -66,6 +66,7 @@ type CohortSeatRow = {
   expires_at: string;
   invite_hash: string | null;
 };
+type PilotSeatSnapshot = Pick<CohortSeatRow, "tenant_id" | "status" | "invite_hash">;
 
 export type PilotInstallationObjectStub = {
   createInvite(record: PilotInviteRecord): Promise<void>;
@@ -97,8 +98,7 @@ export type PilotInstallationObjectStub = {
   ): Promise<{ ok: true; previousInviteHash: string | null } | { ok: false; code: "NOT_PENDING" | "ROLE_MISMATCH" }>;
   markPilotSeatConnected(tenantId: string, connectedAt: string): Promise<void>;
   releasePilotSeat(tenantId: string): Promise<void>;
-  releaseOrphanedConnectedPilotSeat(tenantId: string): Promise<boolean>;
-  listConnectedPilotSeatTenantIds(role: "internal" | "client"): Promise<string[]>;
+  listPilotSeats(role: "internal" | "client"): Promise<PilotSeatSnapshot[]>;
 };
 
 export type PilotInstallationNamespace = {
@@ -316,26 +316,11 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM cohort_seats WHERE tenant_id = ?", tenantId);
   }
 
-  async releaseOrphanedConnectedPilotSeat(tenantId: string): Promise<boolean> {
-    validateTenantId(tenantId);
-    const seat = this.ctx.storage.sql.exec<Pick<CohortSeatRow, "status">>(
-      "SELECT status FROM cohort_seats WHERE tenant_id = ?",
-      tenantId
-    ).toArray()[0];
-    if (!seat || seat.status !== "connected") return false;
-    this.ctx.storage.sql.exec(
-      "DELETE FROM cohort_seats WHERE tenant_id = ? AND status = 'connected'",
-      tenantId
-    );
-    return true;
-  }
-
-  async listConnectedPilotSeatTenantIds(role: "internal" | "client"): Promise<string[]> {
-    const rows = this.ctx.storage.sql.exec<Pick<CohortSeatRow, "tenant_id">>(
-      "SELECT tenant_id FROM cohort_seats WHERE role = ? AND status = 'connected'",
+  async listPilotSeats(role: "internal" | "client"): Promise<PilotSeatSnapshot[]> {
+    return this.ctx.storage.sql.exec<PilotSeatSnapshot>(
+      "SELECT tenant_id, status, invite_hash FROM cohort_seats WHERE role = ?",
       role
     ).toArray();
-    return rows.map((row) => row.tenant_id);
   }
 
   private migrate(): void {
@@ -491,13 +476,21 @@ export function createPilotInstallationRegistry(
       return namespace.getByName(`tenant:${tenantId}`).getInstallation();
     },
 
-    async reconcileOrphanedConnectedSeats(role: "internal" | "client"): Promise<number> {
+    async reclaimUninstalledPilotSeats(
+      role: "internal" | "client",
+      reclaimedAt = new Date()
+    ): Promise<number> {
       const cohort = namespace.getByName(cohortObjectName);
-      const tenantIds = await cohort.listConnectedPilotSeatTenantIds(role);
+      const seats = await cohort.listPilotSeats(role);
       let released = 0;
-      for (const tenantId of tenantIds) {
-        const installation = await namespace.getByName(`tenant:${tenantId}`).getInstallation();
-        if (!installation && await cohort.releaseOrphanedConnectedPilotSeat(tenantId)) released += 1;
+      for (const seat of seats) {
+        const installation = await namespace.getByName(`tenant:${seat.tenant_id}`).getInstallation();
+        if (installation) continue;
+        if (seat.invite_hash) {
+          await namespace.getByName(`invite:${seat.invite_hash}`).revokeInvite(reclaimedAt.toISOString());
+        }
+        await cohort.releasePilotSeat(seat.tenant_id);
+        released += 1;
       }
       return released;
     },

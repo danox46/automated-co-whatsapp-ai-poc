@@ -350,7 +350,7 @@ export function createPilotOnboardingHandler(
         try {
           token = await dependencies.registry.createInvite(invitation, now());
         } catch (error) {
-          const repaired = await dependencies.registry.reconcileOrphanedConnectedSeats("internal");
+          const repaired = await dependencies.registry.reclaimUninstalledPilotSeats("internal", now());
           if (repaired === 0) throw error;
           token = await dependencies.registry.createInvite(invitation, now());
         }

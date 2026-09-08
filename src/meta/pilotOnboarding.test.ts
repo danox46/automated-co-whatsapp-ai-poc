@@ -51,7 +51,7 @@ function createFixture() {
     async getInstallation(tenantId) {
       return structuredClone(installations.get(tenantId) ?? null);
     },
-    async reconcileOrphanedConnectedSeats() {
+    async reclaimUninstalledPilotSeats() {
       const released = orphanedConnectedSeats;
       orphanedConnectedSeats = 0;
       return released;
