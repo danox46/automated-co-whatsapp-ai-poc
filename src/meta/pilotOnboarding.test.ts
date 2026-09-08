@@ -36,10 +36,10 @@ function createFixture() {
       if (!invites.has(token)) throw new Error("missing invite");
       states.set(token, state);
     },
-    async consumeSession(token, state) {
+    async consumeSession(token, state, now = new Date()) {
       if (states.get(token) !== state) return null;
       states.delete(token);
-      return this.getInvite(token);
+      return this.getInvite(token, now);
     },
     async completeInstallation(token, installation, completedAt = new Date()) {
       installations.set(installation.tenantId, structuredClone(installation));
