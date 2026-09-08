@@ -343,9 +343,18 @@ export function createPilotOnboardingHandler(
         cohortRole: "internal" as const,
         expiresAt
       };
-      const token = rotate
-        ? await dependencies.registry.rotateInvite(invitation, now())
-        : await dependencies.registry.createInvite(invitation, now());
+      let token: string;
+      if (rotate) {
+        token = await dependencies.registry.rotateInvite(invitation, now());
+      } else {
+        try {
+          token = await dependencies.registry.createInvite(invitation, now());
+        } catch (error) {
+          const repaired = await dependencies.registry.reconcileOrphanedConnectedSeat(sandbox.tenantId);
+          if (!repaired) throw error;
+          token = await dependencies.registry.createInvite(invitation, now());
+        }
+      }
       return Response.json({
         ok: true,
         tenantId: sandbox.tenantId,

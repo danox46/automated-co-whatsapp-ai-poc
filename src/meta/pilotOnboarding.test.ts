@@ -10,8 +10,10 @@ function createFixture() {
   const states = new Map<string, string>();
   const installations = new Map<string, PilotInstallationRecord>();
   let nextInvite = "invite_token_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+  let orphanedConnectedSeat = false;
   const registry: PilotOnboardingDependencies["registry"] = {
     async createInvite(input, now = new Date()) {
+      if (orphanedConnectedSeat) throw new Error("tenant already has a cohort seat");
       const token = nextInvite;
       invites.set(token, { ...input, createdAt: now.toISOString() });
       nextInvite = `${nextInvite}x`;
@@ -48,6 +50,11 @@ function createFixture() {
     },
     async getInstallation(tenantId) {
       return structuredClone(installations.get(tenantId) ?? null);
+    },
+    async reconcileOrphanedConnectedSeat(tenantId) {
+      if (installations.has(tenantId) || !orphanedConnectedSeat) return false;
+      orphanedConnectedSeat = false;
+      return true;
     },
     async resolveTenantForWaba(wabaId) {
       return [...installations.values()].find((item) => item.wabaId === wabaId)?.tenantId ?? null;
@@ -131,7 +138,10 @@ function createFixture() {
     createAuthorizationSession,
     revokeAuthorizationSessions,
     registerSandboxRecipients,
-    installations
+    installations,
+    markOrphanedConnectedSeat() {
+      orphanedConnectedSeat = true;
+    }
   };
 }
 
@@ -219,6 +229,24 @@ describe("closed-pilot onboarding", () => {
 
     const oldInvitation = await fixture.handler.fetch(new Request(original.invitationUrl));
     expect(oldInvitation?.status).toBe(410);
+  });
+
+  it("repairs an orphaned connected sandbox seat before creating a replacement invitation", async () => {
+    const fixture = createFixture();
+    fixture.markOrphanedConnectedSeat();
+
+    const response = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/sandbox/invitations",
+      "POST",
+      { label: "Automated & CO owner sandbox", expiresInHours: 24 }
+    ));
+
+    expect(response?.status).toBe(201);
+    await expect(response?.json()).resolves.toMatchObject({
+      ok: true,
+      tenantId: "automated-co-sandbox",
+      cohortRole: "internal"
+    });
   });
 
   it("creates a one-time invite, strips it from the URL, and completes verified signup", async () => {

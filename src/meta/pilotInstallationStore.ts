@@ -97,6 +97,7 @@ export type PilotInstallationObjectStub = {
   ): Promise<{ ok: true; previousInviteHash: string | null } | { ok: false; code: "NOT_PENDING" | "ROLE_MISMATCH" }>;
   markPilotSeatConnected(tenantId: string, connectedAt: string): Promise<void>;
   releasePilotSeat(tenantId: string): Promise<void>;
+  releaseOrphanedConnectedPilotSeat(tenantId: string): Promise<boolean>;
 };
 
 export type PilotInstallationNamespace = {
@@ -314,6 +315,20 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM cohort_seats WHERE tenant_id = ?", tenantId);
   }
 
+  async releaseOrphanedConnectedPilotSeat(tenantId: string): Promise<boolean> {
+    validateTenantId(tenantId);
+    const seat = this.ctx.storage.sql.exec<Pick<CohortSeatRow, "status">>(
+      "SELECT status FROM cohort_seats WHERE tenant_id = ?",
+      tenantId
+    ).toArray()[0];
+    if (!seat || seat.status !== "connected") return false;
+    this.ctx.storage.sql.exec(
+      "DELETE FROM cohort_seats WHERE tenant_id = ? AND status = 'connected'",
+      tenantId
+    );
+    return true;
+  }
+
   private migrate(): void {
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS invite (
@@ -465,6 +480,13 @@ export function createPilotInstallationRegistry(
     async getInstallation(tenantId: string): Promise<PilotInstallationRecord | null> {
       validateTenantId(tenantId);
       return namespace.getByName(`tenant:${tenantId}`).getInstallation();
+    },
+
+    async reconcileOrphanedConnectedSeat(tenantId: string): Promise<boolean> {
+      validateTenantId(tenantId);
+      const installation = await namespace.getByName(`tenant:${tenantId}`).getInstallation();
+      if (installation) return false;
+      return namespace.getByName(cohortObjectName).releaseOrphanedConnectedPilotSeat(tenantId);
     },
 
     async resolveTenantForWaba(wabaId: string): Promise<string | null> {
