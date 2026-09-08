@@ -10,10 +10,10 @@ function createFixture() {
   const states = new Map<string, string>();
   const installations = new Map<string, PilotInstallationRecord>();
   let nextInvite = "invite_token_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
-  let orphanedConnectedSeat = false;
+  let orphanedConnectedSeats = 0;
   const registry: PilotOnboardingDependencies["registry"] = {
     async createInvite(input, now = new Date()) {
-      if (orphanedConnectedSeat) throw new Error("tenant already has a cohort seat");
+      if (orphanedConnectedSeats > 0) throw new Error("internal cohort limit reached");
       const token = nextInvite;
       invites.set(token, { ...input, createdAt: now.toISOString() });
       nextInvite = `${nextInvite}x`;
@@ -51,10 +51,10 @@ function createFixture() {
     async getInstallation(tenantId) {
       return structuredClone(installations.get(tenantId) ?? null);
     },
-    async reconcileOrphanedConnectedSeat(tenantId) {
-      if (installations.has(tenantId) || !orphanedConnectedSeat) return false;
-      orphanedConnectedSeat = false;
-      return true;
+    async reconcileOrphanedConnectedSeats() {
+      const released = orphanedConnectedSeats;
+      orphanedConnectedSeats = 0;
+      return released;
     },
     async resolveTenantForWaba(wabaId) {
       return [...installations.values()].find((item) => item.wabaId === wabaId)?.tenantId ?? null;
@@ -140,7 +140,7 @@ function createFixture() {
     registerSandboxRecipients,
     installations,
     markOrphanedConnectedSeat() {
-      orphanedConnectedSeat = true;
+      orphanedConnectedSeats += 1;
     }
   };
 }

@@ -98,6 +98,7 @@ export type PilotInstallationObjectStub = {
   markPilotSeatConnected(tenantId: string, connectedAt: string): Promise<void>;
   releasePilotSeat(tenantId: string): Promise<void>;
   releaseOrphanedConnectedPilotSeat(tenantId: string): Promise<boolean>;
+  listConnectedPilotSeatTenantIds(role: "internal" | "client"): Promise<string[]>;
 };
 
 export type PilotInstallationNamespace = {
@@ -329,6 +330,14 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     return true;
   }
 
+  async listConnectedPilotSeatTenantIds(role: "internal" | "client"): Promise<string[]> {
+    const rows = this.ctx.storage.sql.exec<Pick<CohortSeatRow, "tenant_id">>(
+      "SELECT tenant_id FROM cohort_seats WHERE role = ? AND status = 'connected'",
+      role
+    ).toArray();
+    return rows.map((row) => row.tenant_id);
+  }
+
   private migrate(): void {
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS invite (
@@ -482,11 +491,15 @@ export function createPilotInstallationRegistry(
       return namespace.getByName(`tenant:${tenantId}`).getInstallation();
     },
 
-    async reconcileOrphanedConnectedSeat(tenantId: string): Promise<boolean> {
-      validateTenantId(tenantId);
-      const installation = await namespace.getByName(`tenant:${tenantId}`).getInstallation();
-      if (installation) return false;
-      return namespace.getByName(cohortObjectName).releaseOrphanedConnectedPilotSeat(tenantId);
+    async reconcileOrphanedConnectedSeats(role: "internal" | "client"): Promise<number> {
+      const cohort = namespace.getByName(cohortObjectName);
+      const tenantIds = await cohort.listConnectedPilotSeatTenantIds(role);
+      let released = 0;
+      for (const tenantId of tenantIds) {
+        const installation = await namespace.getByName(`tenant:${tenantId}`).getInstallation();
+        if (!installation && await cohort.releaseOrphanedConnectedPilotSeat(tenantId)) released += 1;
+      }
+      return released;
     },
 
     async resolveTenantForWaba(wabaId: string): Promise<string | null> {

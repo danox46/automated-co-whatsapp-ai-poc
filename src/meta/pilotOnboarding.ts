@@ -350,8 +350,8 @@ export function createPilotOnboardingHandler(
         try {
           token = await dependencies.registry.createInvite(invitation, now());
         } catch (error) {
-          const repaired = await dependencies.registry.reconcileOrphanedConnectedSeat(sandbox.tenantId);
-          if (!repaired) throw error;
+          const repaired = await dependencies.registry.reconcileOrphanedConnectedSeats("internal");
+          if (repaired === 0) throw error;
           token = await dependencies.registry.createInvite(invitation, now());
         }
       }
