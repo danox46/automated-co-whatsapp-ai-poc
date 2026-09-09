@@ -98,7 +98,8 @@ The next major design decision is the real inventory source. Before replacing th
 If this repository creates, audits, or changes an owner-dashboard surface, use
 `$dashboard-system-operator` and preserve its complete visual doctrine:
 friendly HubSpot-inspired hierarchy, compact pulse links, title-only lists,
-Requester-first provenance, one Action Item, acceptance work as Line Items,
+Requester-first provenance, compact expandable Action Items and Next Actions
+kept distinct from Line Items, acceptance work as Line Items,
 readable responsive registered modules, an interactive module inventory, and
 sanitized agent-only context behind a calm human layer. This does not broaden
 the bot's inbound-only or read-only authority.
