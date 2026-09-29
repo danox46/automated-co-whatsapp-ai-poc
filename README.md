@@ -2,8 +2,8 @@
 
 The default runtime is a tenant-isolated Meta WhatsApp Cloud API MCP for a closed pilot. It includes one-time Embedded Signup, OAuth 2.1 with PKCE and resource-bound JWTs, durable structured conversation history, bounded retention, WABA-to-tenant webhook routing, policy-controlled replies/templates, and durable outbound idempotency. Twilio remains an explicit legacy path only.
 
-While Meta Business Verification is pending, an app-owned test-number lane can
-connect one internal sandbox tenant without pretending to onboard a client. It
+The verified Morning ARP business portfolio uses an app-owned test-number lane
+to connect one internal sandbox tenant without pretending to onboard a client. It
 uses a one-time owner link, a server-side recipient allowlist of at most five
 Meta test recipients, and the same OAuth, tenant, consent, 24-hour-window,
 template, and idempotency controls as the client pilot.
