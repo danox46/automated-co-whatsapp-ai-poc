@@ -104,6 +104,21 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       }
     },
 
+    async isAppSubscribed(accessToken: string, wabaId: string): Promise<boolean> {
+      assertProviderId(wabaId, "WABA");
+      const response = await boundedFetch(request, `${base}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      }, options.timeoutMs);
+      const body = await readMetaJson(response);
+      if (!response.ok) throw metaError(response, body, "META_WEBHOOK_SUBSCRIPTION_LOOKUP_FAILED");
+      const rows = Array.isArray(body.data) ? body.data.filter(isRecord) : [];
+      return rows.some((row) => {
+        if (readString(row.id) === options.appId) return true;
+        const nested = isRecord(row.whatsapp_business_api_data) ? row.whatsapp_business_api_data : null;
+        return nested ? readString(nested.id) === options.appId : false;
+      });
+    },
+
     async unsubscribeApp(accessToken: string, wabaId: string): Promise<void> {
       assertProviderId(wabaId, "WABA");
       const response = await boundedFetch(request, `${base}/${encodeURIComponent(wabaId)}/subscribed_apps`, {

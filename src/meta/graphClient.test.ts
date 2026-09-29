@@ -38,6 +38,21 @@ describe("Meta Graph client", () => {
       .rejects.toMatchObject({ code: "META_PHONE_NOT_IN_WABA", status: 403 });
   });
 
+  it("reads back the app subscription without exposing the access token in the URL", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(json({
+      data: [{ whatsapp_business_api_data: { id: "1794512451561594", name: "Morning ARP Connect" } }]
+    }));
+    const client = createMetaGraphClient({
+      appId: "1794512451561594",
+      appSecret: "secret",
+      graphVersion: "v25.0",
+      fetch: request
+    });
+
+    await expect(client.isAppSubscribed("provider-token", "934775242587261")).resolves.toBe(true);
+    expect(String(request.mock.calls[0][0])).not.toContain("provider-token");
+  });
+
   it("accepts only a provider-approved template with the exact language", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(json({
       data: [{ name: "support_followup", status: "APPROVED", category: "UTILITY", language: "es_CO" }]

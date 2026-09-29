@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPilotOnboardingHandler, type PilotOnboardingDependencies } from "./pilotOnboarding.js";
-import { randomBase64Url } from "./pilotCrypto.js";
+import { encryptPilotSecret, randomBase64Url } from "./pilotCrypto.js";
 import type { PilotInstallationRecord, PilotInviteRecord } from "./pilotInstallationStore.js";
 
 const origin = "https://pilot.example.workers.dev";
@@ -89,6 +89,7 @@ function createFixture() {
       verifiedName: "Pilot Business"
     })),
     subscribeApp: vi.fn(async () => undefined),
+    isAppSubscribed: vi.fn(async () => true),
     unsubscribeApp: vi.fn(async () => undefined),
     verifyApprovedTemplate: vi.fn(async (_token, _waba, name, languageCode) => ({
       name,
@@ -106,12 +107,13 @@ function createFixture() {
   const revokeAuthorizationSessions = vi.fn(async () => undefined);
   const registerSandboxRecipients = vi.fn(async () => undefined);
   const fixedNow = new Date("2026-09-07T12:00:00.000Z");
+  const encryptionKey = randomBase64Url(32);
   const handler = createPilotOnboardingHandler({
     META_APP_ID: "public-app-id",
     META_APP_SECRET: "private-app-secret",
     META_GRAPH_API_VERSION: "v25.0",
     META_EMBEDDED_SIGNUP_CONFIG_ID: "public-config-id",
-    INSTALLATION_ENCRYPTION_KEY: randomBase64Url(32),
+    INSTALLATION_ENCRYPTION_KEY: encryptionKey,
     PILOT_ADMIN_TOKEN: "owner-admin-token",
     PUBLIC_ORIGIN: origin
   }, {
@@ -138,6 +140,7 @@ function createFixture() {
     createAuthorizationSession,
     revokeAuthorizationSessions,
     registerSandboxRecipients,
+    encryptionKey,
     installations,
     markOrphanedConnectedSeat() {
       orphanedConnectedSeats += 1;
@@ -327,7 +330,7 @@ describe("closed-pilot onboarding", () => {
       wabaId: "111222333",
       phoneNumberId: "444555666",
       displayPhoneNumber: "+57 private",
-      encryptedAccessToken: { ciphertext: "not-used", iv: "not-used", version: 1 },
+      encryptedAccessToken: await encryptPilotSecret("provider-token", fixture.encryptionKey),
       connectedAt: "2026-09-07T12:00:00.000Z",
       webhookSubscribedAt: "2026-09-07T12:00:00.000Z",
       status: "connected"
@@ -347,6 +350,33 @@ describe("closed-pilot onboarding", () => {
     ));
     expect(deletion?.status).toBe(409);
     expect(fixture.deleteConversationData).not.toHaveBeenCalled();
+  });
+
+  it("returns an authoritative sanitized provider subscription readback", async () => {
+    const fixture = createFixture();
+    fixture.installations.set("pilot-provider", {
+      tenantId: "pilot-provider",
+      wabaId: "111222333",
+      phoneNumberId: "444555666",
+      encryptedAccessToken: await encryptPilotSecret("provider-token", fixture.encryptionKey),
+      connectedAt: "2026-09-07T12:00:00.000Z",
+      webhookSubscribedAt: "2026-09-07T12:00:00.000Z",
+      status: "connected"
+    });
+
+    const response = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/installations/pilot-provider/provider-status",
+      "GET"
+    ));
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toEqual({
+      ok: true,
+      status: "connected",
+      providerPhoneVerified: true,
+      providerSubscription: "subscribed"
+    });
+    expect(fixture.graph.isAppSubscribed).toHaveBeenCalled();
   });
 
   it("reconciles a stale provider credential while retaining conversation data", async () => {

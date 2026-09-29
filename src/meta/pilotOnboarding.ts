@@ -75,9 +75,12 @@ export function createPilotOnboardingHandler(
       if (url.pathname === "/admin/pilot/sandbox/invitations/rotate" && request.method === "POST") {
         return createSandboxInvitation(request, true);
       }
-      const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect|reconcile-disconnect))?$/u.exec(url.pathname);
+      const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect|reconcile-disconnect|provider-status))?$/u.exec(url.pathname);
       if (installationMatch && request.method === "GET" && !installationMatch[2]) {
         return getInstallation(request, installationMatch[1]);
+      }
+      if (installationMatch && request.method === "GET" && installationMatch[2] === "provider-status") {
+        return getProviderStatus(request, installationMatch[1]);
       }
       if (installationMatch && request.method === "POST" && installationMatch[2] === "disconnect") {
         return disconnectInstallation(request, installationMatch[1]);
@@ -381,6 +384,33 @@ export function createPilotOnboardingHandler(
     return Response.json({ ok: true, installation: dependencies.registry.sanitize(installation) }, {
       headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
     });
+  }
+
+  async function getProviderStatus(request: Request, tenantId: string): Promise<Response> {
+    if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
+    const installation = await dependencies.registry.getInstallation(tenantId);
+    if (!installation) return jsonError("PILOT_INSTALLATION_NOT_FOUND", "No installation exists for this pilot tenant.", 404);
+    if (installation.status !== "connected") {
+      return Response.json({ ok: true, status: installation.status, providerSubscription: "not-checked" }, {
+        headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
+      });
+    }
+    try {
+      const accessToken = await decryptPilotSecret(installation.encryptedAccessToken, env.INSTALLATION_ENCRYPTION_KEY);
+      await dependencies.graph.verifyPhoneBelongsToWaba(accessToken, installation.wabaId, installation.phoneNumberId);
+      const subscribed = await dependencies.graph.isAppSubscribed(accessToken, installation.wabaId);
+      return Response.json({
+        ok: true,
+        status: installation.status,
+        providerPhoneVerified: true,
+        providerSubscription: subscribed ? "subscribed" : "missing"
+      }, {
+        headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
+      });
+    } catch (error) {
+      const code = error instanceof MetaGraphError ? error.code : "PILOT_PROVIDER_STATUS_FAILED";
+      return jsonError(code, "Meta provider status could not be verified.", 502);
+    }
   }
 
   async function disconnectInstallation(request: Request, tenantId: string): Promise<Response> {
