@@ -349,6 +349,37 @@ describe("closed-pilot onboarding", () => {
     expect(fixture.deleteConversationData).not.toHaveBeenCalled();
   });
 
+  it("reconciles a stale provider credential while retaining conversation data", async () => {
+    const fixture = createFixture();
+    fixture.installations.set("pilot-stale", {
+      tenantId: "pilot-stale",
+      wabaId: "111222333",
+      phoneNumberId: "444555666",
+      encryptedAccessToken: { ciphertext: "not-used", iv: "not-used", version: 1 },
+      connectedAt: "2026-09-07T12:00:00.000Z",
+      webhookSubscribedAt: "2026-09-07T12:00:00.000Z",
+      status: "connected"
+    });
+    vi.mocked(fixture.graph.unsubscribeApp).mockRejectedValueOnce(new Error("expired provider token"));
+
+    const response = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/installations/pilot-stale/reconcile-disconnect",
+      "POST",
+      { confirmation: "RECONCILE DISCONNECT pilot-stale" }
+    ));
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toMatchObject({
+      ok: true,
+      status: "disconnected",
+      providerReconciled: false,
+      conversationDataRetained: true
+    });
+    expect(fixture.installations.get("pilot-stale")?.status).toBe("disconnected");
+    expect(fixture.deleteConversationData).not.toHaveBeenCalled();
+    expect(fixture.revokeAuthorizationSessions).toHaveBeenCalledWith("pilot-stale");
+  });
+
   it("rotates an unused invitation without allocating another cohort seat", async () => {
     const fixture = createFixture();
     const originalResponse = await fixture.handler.fetch(adminRequest(

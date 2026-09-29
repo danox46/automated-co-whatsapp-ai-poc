@@ -20,14 +20,34 @@ export function createWhatsAppPolicyAdminHandler(input: {
       const template = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/templates\/([A-Za-z0-9_.-]{1,128})$/u.exec(url.pathname);
       const consent = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/template-consent$/u.exec(url.pathname);
       const policy = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/policy$/u.exec(url.pathname);
-      if (!template && !consent && !policy) return null;
-      if (request.method !== "PUT") return jsonError("METHOD_NOT_ALLOWED", "Use PUT for this pilot policy route.", 405);
+      const conversations = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations$/u.exec(url.pathname);
+      const history = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/history$/u.exec(url.pathname);
+      if (!template && !consent && !policy && !conversations && !history) return null;
       if (!await isAdmin(request, input.adminToken)) return unauthorized();
+      if (conversations && request.method === "GET") return listConversations(conversations[1]);
+      if (history && request.method === "GET") return getConversationHistory(history[1], history[2], url);
+      if (request.method !== "PUT") return jsonError("METHOD_NOT_ALLOWED", "Use GET for structured records or PUT for policy changes.", 405);
       if (template) return upsertTemplate(request, template[1], template[2]);
       if (consent) return setConsent(request, consent[1], consent[2]);
       return setPolicy(request, policy![1], policy![2]);
     }
   };
+
+  async function listConversations(tenantId: string) {
+    const stub = await initializedTenant(tenantId);
+    const result = await stub.listConversations({ limit: 50 });
+    return json({ ok: true, ...result });
+  }
+
+  async function getConversationHistory(tenantId: string, conversationRef: string, url: URL) {
+    const limitValue = Number(url.searchParams.get("limit") ?? "100");
+    const limit = Number.isInteger(limitValue) && limitValue >= 1 && limitValue <= 200 ? limitValue : 100;
+    const cursor = url.searchParams.get("cursor") ?? undefined;
+    const stub = await initializedTenant(tenantId);
+    const result = await stub.getConversationHistory({ conversationRef, limit, ...(cursor ? { cursor } : {}) });
+    if (!result) return jsonError("PILOT_CONVERSATION_NOT_FOUND", "The tenant-scoped conversation is unavailable.", 404);
+    return json({ ok: true, ...result });
+  }
 
   async function upsertTemplate(request: Request, tenantId: string, templateName: string) {
     const body = await readBoundedJson(request);

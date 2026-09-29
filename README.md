@@ -133,6 +133,33 @@ Health check:
 curl http://localhost:3000/health
 ```
 
+### Closed-pilot operations
+
+On Windows, `scripts/pilot-admin.ps1` reads the existing `PILOT_ADMIN_TOKEN`
+from Windows Credential Manager and passes it to the bounded admin CLI without
+printing it. Common owner-only operations are:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pilot-admin.ps1 status https://YOUR-WORKER TENANT_ID
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pilot-admin.ps1 sandbox-connect https://YOUR-WORKER "Owner sandbox"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pilot-admin.ps1 conversations https://YOUR-WORKER TENANT_ID
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pilot-admin.ps1 history https://YOUR-WORKER TENANT_ID CONVERSATION_REF
+```
+
+`sandbox-connect` consumes the one-time internal invitation inside the CLI, so
+the invitation and OAuth bootstrap values never appear in terminal output. The
+conversation commands return only normalized tenant records; they do not expose
+raw webhook payloads or provider identifiers.
+
+If an obsolete installation cannot unsubscribe because its provider credential
+has already expired, `reconcile-disconnect` releases only the local pilot seat,
+route, and OAuth sessions after exact confirmation. It preserves conversation
+history and reports whether provider-side reconciliation succeeded.
+
+Credential helpers under `scripts/` use either an allowlisted clipboard handoff
+or a one-use loopback form. They stream secrets to Cloudflare Wrangler through
+stdin and never place secret values in Git, command arguments, or tool output.
+
 Local demo without WhatsApp:
 
 ```bash

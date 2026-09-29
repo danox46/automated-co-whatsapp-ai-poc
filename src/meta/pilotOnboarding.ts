@@ -75,12 +75,15 @@ export function createPilotOnboardingHandler(
       if (url.pathname === "/admin/pilot/sandbox/invitations/rotate" && request.method === "POST") {
         return createSandboxInvitation(request, true);
       }
-      const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect))?$/u.exec(url.pathname);
+      const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect|reconcile-disconnect))?$/u.exec(url.pathname);
       if (installationMatch && request.method === "GET" && !installationMatch[2]) {
         return getInstallation(request, installationMatch[1]);
       }
       if (installationMatch && request.method === "POST" && installationMatch[2] === "disconnect") {
         return disconnectInstallation(request, installationMatch[1]);
+      }
+      if (installationMatch && request.method === "POST" && installationMatch[2] === "reconcile-disconnect") {
+        return reconcileDisconnectInstallation(request, installationMatch[1]);
       }
       if (installationMatch && request.method === "DELETE" && !installationMatch[2]) {
         return deleteInstallation(request, installationMatch[1]);
@@ -399,6 +402,44 @@ export function createPilotOnboardingHandler(
     await dependencies.registry.disconnect(tenantId, now());
     await dependencies.revokeAuthorizationSessions(tenantId);
     return Response.json({ ok: true, status: "disconnected" }, {
+      headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
+    });
+  }
+
+  async function reconcileDisconnectInstallation(request: Request, tenantId: string): Promise<Response> {
+    if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
+    const body = await readBoundedJson(request);
+    if (body?.confirmation !== `RECONCILE DISCONNECT ${tenantId}`) {
+      return jsonError(
+        "PILOT_RECONCILE_CONFIRMATION_REQUIRED",
+        `Send confirmation exactly as RECONCILE DISCONNECT ${tenantId}.`,
+        400
+      );
+    }
+    const installation = await dependencies.registry.getInstallation(tenantId);
+    if (!installation) return jsonError("PILOT_INSTALLATION_NOT_FOUND", "No installation exists for this pilot tenant.", 404);
+    if (installation.status === "disconnected") {
+      return Response.json({ ok: true, status: "disconnected", alreadyDisconnected: true, providerReconciled: true }, {
+        headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
+      });
+    }
+
+    let providerReconciled = true;
+    try {
+      const accessToken = await decryptPilotSecret(installation.encryptedAccessToken, env.INSTALLATION_ENCRYPTION_KEY);
+      await dependencies.graph.unsubscribeApp(accessToken, installation.wabaId);
+    } catch {
+      providerReconciled = false;
+    }
+
+    await dependencies.registry.disconnect(tenantId, now());
+    await dependencies.revokeAuthorizationSessions(tenantId);
+    return Response.json({
+      ok: true,
+      status: "disconnected",
+      providerReconciled,
+      conversationDataRetained: true
+    }, {
       headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
     });
   }
