@@ -99,21 +99,37 @@ $processExitCode = 1
 
 try {
   $env:PILOT_ADMIN_TOKEN = $adminSecret
-  $commandOutput = & $nodeExecutable $scriptPath @PilotArguments 2>&1
-  $processExitCode = $LASTEXITCODE
-  if ($commandOutput) {
-    $renderedOutput = ($commandOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
-    if ($processExitCode -eq 0) {
-      [Console]::Out.WriteLine($renderedOutput)
-    }
-    else {
-      [Console]::Error.WriteLine($renderedOutput)
-    }
+  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $nodeExecutable
+  $startInfo.WorkingDirectory = Split-Path -Parent $PSScriptRoot
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.CreateNoWindow = $true
+  $nativeArguments = @($scriptPath) + $PilotArguments
+  $startInfo.Arguments = ($nativeArguments | ForEach-Object {
+    '"' + $_.Replace('"', '\"') + '"'
+  }) -join ' '
+  $process = [System.Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  [void]$process.Start()
+  $stdout = $process.StandardOutput.ReadToEnd()
+  $stderr = $process.StandardError.ReadToEnd()
+  $process.WaitForExit()
+  $processExitCode = $process.ExitCode
+  if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+    [Console]::Out.Write($stdout)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+    [Console]::Error.Write($stderr)
   }
 }
 finally {
   Remove-Item Env:PILOT_ADMIN_TOKEN -ErrorAction SilentlyContinue
   $adminSecret = $null
+  if ($null -ne $process) {
+    $process.Dispose()
+  }
 }
 
 exit $processExitCode

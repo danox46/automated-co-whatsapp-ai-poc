@@ -181,6 +181,10 @@ function base64Url(value) {
 }
 
 function toolMessage(result) {
+  const structuredError = result?.structuredContent?.error;
+  if (structuredError?.code) {
+    return `${structuredError.code}: ${structuredError.message ?? "Unknown error"}`;
+  }
   const text = result?.content?.find((item) => item.type === "text")?.text;
   if (!text) return "No structured error was returned.";
   try {
