@@ -46,6 +46,7 @@ import {
 import { createWhatsAppPolicyAdminHandler } from "../meta/policyAdmin.js";
 import { decryptPilotSecret } from "../meta/pilotCrypto.js";
 import { createSandboxBotBridge } from "../meta/sandboxBotBridge.js";
+import { createSandboxFlowAdmin } from "../meta/sandboxFlowAdmin.js";
 import { opaqueConversationRef } from "../meta/conversationEvents.js";
 import {
   readWhatsAppSandboxConfig,
@@ -199,6 +200,20 @@ export function createPersistentWhatsAppWorker(
             }
           }, { status: 503, headers: noStoreHeaders() });
         }
+        const flowAdminResponse = await createSandboxFlowAdmin({
+          adminToken: env.PILOT_ADMIN_TOKEN,
+          wabaId: sandboxConfigurationValid ? sandbox?.wabaId : undefined,
+          graph: graph ?? undefined,
+          accessToken: async () => {
+            if (!sandbox) throw new Error("SANDBOX_NOT_CONFIGURED");
+            const installation = await registry.getInstallation(sandbox.tenantId);
+            if (!installation || installation.status !== "connected" || installation.wabaId !== sandbox.wabaId) {
+              throw new Error("SANDBOX_INSTALLATION_NOT_CONNECTED");
+            }
+            return decryptPilotSecret(installation.encryptedAccessToken, env.INSTALLATION_ENCRYPTION_KEY as string);
+          }
+        })(request);
+        if (flowAdminResponse) return flowAdminResponse;
         const pilot = createPilotOnboardingHandler(env as PersistentWhatsAppWorkerEnv & PilotOnboardingEnv, {
           registry,
           graph: graph as ReturnType<typeof createMetaGraphClient>,

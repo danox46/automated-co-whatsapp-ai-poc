@@ -7,7 +7,7 @@ const [command, baseUrl, ...argumentsAfterOrigin] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
 if (!adminToken || !command || !baseUrl) {
-  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|invite|reinvite|status|provider-status|conversations|history|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [tenant-id] [conversation-ref|label] [attachment-ref|internal|client]");
+  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|status|provider-status|conversations|history|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
 }
 
 const origin = new URL(baseUrl).origin;
@@ -86,6 +86,19 @@ if (command === "sandbox-connect") {
     method: "POST",
     headers
   });
+} else if (command === "flow-draft") {
+  const [type, path] = argumentsAfterOrigin;
+  if (!(["visit", "wholesale"].includes(type)) || !path) fail("flow-draft requires visit|wholesale and a local JSON file path.");
+  const { readFile } = await import("node:fs/promises");
+  const flowJson = await readFile(path, "utf8");
+  response = await fetch(`${origin}/admin/pilot/sandbox/flows`, {
+    method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ type, flowJson })
+  });
+} else if (command === "flow-publish") {
+  const id = argumentsAfterOrigin[0];
+  if (!/^\d{3,32}$/.test(id ?? "")) fail("flow-publish requires a numeric Flow ID.");
+  response = await fetch(`${origin}/admin/pilot/sandbox/flows/${id}/publish`, { method: "POST", headers });
 } else if (command === "conversations") {
   const tenantId = argumentsAfterOrigin[0];
   if (!tenantId) fail("conversations requires a tenant ID.");
