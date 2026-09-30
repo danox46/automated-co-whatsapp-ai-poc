@@ -34,6 +34,25 @@ if ($secretValue.Length -lt 16 -or $secretValue.Length -gt 8192) {
   throw "The clipboard value is outside the accepted secret length."
 }
 
+$localDpapiPath = $null
+if ($Name -eq "META_SANDBOX_ACCESS_TOKEN") {
+  Add-Type -AssemblyName System.Security
+  $localDpapiPath = Join-Path $env:USERPROFILE ".codex\secrets\automated-co-meta-whatsapp-sandbox-token.dpapi"
+  $localDpapiDirectory = Split-Path -Parent $localDpapiPath
+  [System.IO.Directory]::CreateDirectory($localDpapiDirectory) | Out-Null
+  $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($secretValue)
+  $protectedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
+    $plainBytes,
+    $null,
+    [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+  )
+  $temporaryDpapiPath = "$localDpapiPath.tmp"
+  [System.IO.File]::WriteAllBytes($temporaryDpapiPath, $protectedBytes)
+  Move-Item -LiteralPath $temporaryDpapiPath -Destination $localDpapiPath -Force
+  $plainBytes = $null
+  $protectedBytes = $null
+}
+
 $process = $null
 try {
   $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -59,7 +78,8 @@ try {
 
   [pscustomobject]@{
     secret = $Name
-    stored = $true
+    cloudflareStored = $true
+    localDpapiStored = ($null -ne $localDpapiPath)
     clipboardCleared = $true
   } | ConvertTo-Json -Compress
 }

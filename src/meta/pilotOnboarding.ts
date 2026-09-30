@@ -75,7 +75,7 @@ export function createPilotOnboardingHandler(
       if (url.pathname === "/admin/pilot/sandbox/invitations/rotate" && request.method === "POST") {
         return createSandboxInvitation(request, true);
       }
-      const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect|reconcile-disconnect|provider-status))?$/u.exec(url.pathname);
+      const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect|reconcile-disconnect|provider-status|refresh-sandbox-credential))?$/u.exec(url.pathname);
       if (installationMatch && request.method === "GET" && !installationMatch[2]) {
         return getInstallation(request, installationMatch[1]);
       }
@@ -87,6 +87,9 @@ export function createPilotOnboardingHandler(
       }
       if (installationMatch && request.method === "POST" && installationMatch[2] === "reconcile-disconnect") {
         return reconcileDisconnectInstallation(request, installationMatch[1]);
+      }
+      if (installationMatch && request.method === "POST" && installationMatch[2] === "refresh-sandbox-credential") {
+        return refreshSandboxCredential(request, installationMatch[1]);
       }
       if (installationMatch && request.method === "DELETE" && !installationMatch[2]) {
         return deleteInstallation(request, installationMatch[1]);
@@ -410,6 +413,60 @@ export function createPilotOnboardingHandler(
     } catch (error) {
       const code = error instanceof MetaGraphError ? error.code : "PILOT_PROVIDER_STATUS_FAILED";
       return jsonError(code, "Meta provider status could not be verified.", 502);
+    }
+  }
+
+  async function refreshSandboxCredential(request: Request, tenantId: string): Promise<Response> {
+    if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
+    const sandbox = dependencies.sandbox;
+    if (!sandbox || !dependencies.registerSandboxRecipients || tenantId !== sandbox.tenantId) {
+      return jsonError("WHATSAPP_SANDBOX_REFRESH_NOT_AVAILABLE", "This tenant is not the configured app-owned sandbox.", 409);
+    }
+    const installation = await dependencies.registry.getInstallation(tenantId);
+    if (!installation) {
+      return jsonError("PILOT_INSTALLATION_NOT_FOUND", "No installation exists for this pilot tenant.", 404);
+    }
+
+    try {
+      const phone = await dependencies.graph.verifyPhoneBelongsToWaba(
+        sandbox.accessToken,
+        sandbox.wabaId,
+        sandbox.phoneNumberId
+      );
+      await dependencies.graph.subscribeApp(sandbox.accessToken, sandbox.wabaId);
+      const refreshedAt = now();
+      await dependencies.registerSandboxRecipients(
+        sandbox.tenantId,
+        sandbox.phoneNumberId,
+        sandbox.allowedRecipients,
+        refreshedAt
+      );
+      await dependencies.registry.refreshInstallation({
+        tenantId: sandbox.tenantId,
+        wabaId: sandbox.wabaId,
+        phoneNumberId: sandbox.phoneNumberId,
+        ...(phone.verifiedName ? { verifiedName: phone.verifiedName } : {}),
+        ...(phone.displayPhoneNumber ? { displayPhoneNumber: phone.displayPhoneNumber } : {}),
+        encryptedAccessToken: await encryptPilotSecret(sandbox.accessToken, env.INSTALLATION_ENCRYPTION_KEY),
+        ...(sandbox.tokenExpiresAt ? { tokenExpiresAt: sandbox.tokenExpiresAt } : {}),
+        connectedAt: installation.connectedAt,
+        webhookSubscribedAt: refreshedAt.toISOString(),
+        status: "connected"
+      }, refreshedAt);
+      return Response.json({
+        ok: true,
+        status: "connected",
+        tenantId,
+        providerPhoneVerified: true,
+        providerSubscription: "subscribed",
+        conversationDataRetained: true,
+        credentialRefreshedAt: refreshedAt.toISOString()
+      }, {
+        headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
+      });
+    } catch (error) {
+      const code = error instanceof MetaGraphError ? error.code : "WHATSAPP_SANDBOX_REFRESH_FAILED";
+      return jsonError(code, "The sandbox credential could not be refreshed.", 502);
     }
   }
 

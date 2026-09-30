@@ -48,6 +48,9 @@ function createFixture() {
       const invite = invites.get(token);
       if (invite) invite.usedAt = completedAt.toISOString();
     },
+    async refreshInstallation(installation) {
+      installations.set(installation.tenantId, structuredClone(installation));
+    },
     async getInstallation(tenantId) {
       return structuredClone(installations.get(tenantId) ?? null);
     },
@@ -232,6 +235,38 @@ describe("closed-pilot onboarding", () => {
 
     const oldInvitation = await fixture.handler.fetch(new Request(original.invitationUrl));
     expect(oldInvitation?.status).toBe(410);
+  });
+
+  it("refreshes the connected sandbox credential without deleting conversation data", async () => {
+    const fixture = createFixture();
+    fixture.installations.set("automated-co-sandbox", {
+      tenantId: "automated-co-sandbox",
+      wabaId: "5550002001",
+      phoneNumberId: "5550001001",
+      encryptedAccessToken: await encryptPilotSecret("expired-token", fixture.encryptionKey),
+      connectedAt: "2026-09-01T12:00:00.000Z",
+      webhookSubscribedAt: "2026-09-01T12:00:00.000Z",
+      status: "connected"
+    });
+
+    const response = await fixture.handler.fetch(adminRequest(
+      "/admin/pilot/installations/automated-co-sandbox/refresh-sandbox-credential",
+      "POST"
+    ));
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toMatchObject({
+      ok: true,
+      status: "connected",
+      tenantId: "automated-co-sandbox",
+      providerPhoneVerified: true,
+      providerSubscription: "subscribed",
+      conversationDataRetained: true
+    });
+    expect(fixture.installations.get("automated-co-sandbox")?.connectedAt)
+      .toBe("2026-09-01T12:00:00.000Z");
+    expect(fixture.deleteConversationData).not.toHaveBeenCalled();
+    expect(fixture.graph.subscribeApp).toHaveBeenCalled();
   });
 
   it("repairs an orphaned connected sandbox seat before creating a replacement invitation", async () => {

@@ -7,7 +7,7 @@ const [command, baseUrl, ...argumentsAfterOrigin] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
 if (!adminToken || !command || !baseUrl) {
-  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|invite|reinvite|status|provider-status|conversations|history|disconnect|reconcile-disconnect|delete> <https-origin> [tenant-id] [conversation-ref|label] [internal|client]");
+  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|invite|reinvite|status|provider-status|conversations|history|disconnect|reconcile-disconnect|delete> <https-origin> [tenant-id] [conversation-ref|label] [internal|client]");
 }
 
 const origin = new URL(baseUrl).origin;
@@ -79,6 +79,13 @@ if (command === "sandbox-connect") {
   const tenantId = argumentsAfterOrigin[0];
   if (!tenantId) fail("provider-status requires a tenant ID.");
   response = await fetch(`${origin}/admin/pilot/installations/${encodeURIComponent(tenantId)}/provider-status`, { headers });
+} else if (command === "refresh-sandbox-credential") {
+  const tenantId = argumentsAfterOrigin[0];
+  if (!tenantId) fail("refresh-sandbox-credential requires a tenant ID.");
+  response = await fetch(`${origin}/admin/pilot/installations/${encodeURIComponent(tenantId)}/refresh-sandbox-credential`, {
+    method: "POST",
+    headers
+  });
 } else if (command === "conversations") {
   const tenantId = argumentsAfterOrigin[0];
   if (!tenantId) fail("conversations requires a tenant ID.");

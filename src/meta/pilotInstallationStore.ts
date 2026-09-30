@@ -471,6 +471,18 @@ export function createPilotInstallationRegistry(
       await namespace.getByName(`invite:${inviteHash}`).markInviteUsed(completedAt.toISOString());
     },
 
+    async refreshInstallation(
+      installation: PilotInstallationRecord,
+      refreshedAt = new Date()
+    ): Promise<void> {
+      const tenantStub = namespace.getByName(`tenant:${installation.tenantId}`);
+      const wabaStub = namespace.getByName(`waba:${installation.wabaId}`);
+      await tenantStub.putInstallation(installation);
+      await wabaStub.putWabaRoute(installation.tenantId);
+      await namespace.getByName(cohortObjectName)
+        .markPilotSeatConnected(installation.tenantId, refreshedAt.toISOString());
+    },
+
     async getInstallation(tenantId: string): Promise<PilotInstallationRecord | null> {
       validateTenantId(tenantId);
       return namespace.getByName(`tenant:${tenantId}`).getInstallation();
