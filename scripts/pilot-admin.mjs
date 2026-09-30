@@ -158,7 +158,7 @@ try {
 }
 
 if (!response.ok) {
-  const code = payload?.error?.code ?? `HTTP_${response.status}`;
+  const code = payload?.error?.code ?? payload?.code ?? `HTTP_${response.status}`;
   const message = payload?.error?.message ?? "Pilot administration failed.";
   fail(`${code}: ${message}`);
 }
