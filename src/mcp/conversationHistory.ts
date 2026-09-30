@@ -119,6 +119,7 @@ export type InternalAttachmentStateUpdate = {
   state: Extract<WhatsAppAttachmentState, "ready" | "failed">;
   storageKey?: string;
   sizeBytes?: number;
+  sha256?: string;
 };
 
 export type InternalStoredAttachment = StoredMessageAttachment & {
@@ -280,6 +281,7 @@ implements WhatsAppConversationReader, WhatsAppConversationWriter, WhatsAppConve
     if (!message?.attachment) return;
     message.attachment.state = update.state;
     if (update.sizeBytes !== undefined) message.attachment.sizeBytes = update.sizeBytes;
+    if (update.sha256 !== undefined) message.attachment.sha256 = update.sha256;
   }
 
   async updatePolicyState(patch: InternalConversationPolicyPatch): Promise<void> {

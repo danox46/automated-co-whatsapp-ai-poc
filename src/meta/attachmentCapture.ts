@@ -10,6 +10,11 @@ import type { createPilotInstallationRegistry } from "./pilotInstallationStore.j
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
 
+export type AttachmentCaptureResult = {
+  state: "ready" | "failed" | "unsupported";
+  reason?: string;
+};
+
 export function createMetaAttachmentCapture(input: {
   registry: ReturnType<typeof createPilotInstallationRegistry>;
   graph: ReturnType<typeof createMetaGraphClient>;
@@ -17,72 +22,126 @@ export function createMetaAttachmentCapture(input: {
   contentStore: WhatsAppAttachmentContentStore;
   writer: WhatsAppConversationWriter;
 }) {
-  return async (attachment: InternalStoredAttachment & { tenantId: string }): Promise<void> => {
-    if (attachment.state === "unsupported" || attachment.kind !== "image") return;
-    const fail = async () => input.writer.updateAttachmentState({
-      tenantId: attachment.tenantId,
-      conversationRef: attachment.conversationRef,
-      attachmentRef: attachment.attachmentRef,
-      state: "failed"
-    });
-    try {
-      const installation = await input.registry.getInstallation(attachment.tenantId);
-      if (installation?.status !== "connected" || installation.phoneNumberId !== attachment.providerAccountRef) {
-        await fail();
-        return;
+  return async (attachment: InternalStoredAttachment & { tenantId: string }): Promise<AttachmentCaptureResult> => {
+    if (attachment.state === "unsupported" || attachment.kind !== "image") return { state: "unsupported" };
+    const fail = async (reason: string): Promise<AttachmentCaptureResult> => captureStep(
+      "ATTACHMENT_FAILURE_STATE_UPDATE_FAILED",
+      async () => {
+        await input.writer.updateAttachmentState({
+          tenantId: attachment.tenantId,
+          conversationRef: attachment.conversationRef,
+          attachmentRef: attachment.attachmentRef,
+          state: "failed"
+        });
+        return { state: "failed", reason };
       }
-      const accessToken = await decryptPilotSecret(
-        installation.encryptedAccessToken,
-        input.encryptionKey
+    );
+    try {
+      const installation = await captureStep(
+        "ATTACHMENT_INSTALLATION_READ_FAILED",
+        () => input.registry.getInstallation(attachment.tenantId)
       );
-      const metadata = await input.graph.retrieveMediaMetadata(
-        accessToken,
-        attachment.providerMediaRef,
-        installation.phoneNumberId
+      if (installation?.status !== "connected" || installation.phoneNumberId !== attachment.providerAccountRef) {
+        return fail("INSTALLATION_MISMATCH");
+      }
+      const accessToken = await captureStep(
+        "ATTACHMENT_CREDENTIAL_DECRYPT_FAILED",
+        () => decryptPilotSecret(installation.encryptedAccessToken, input.encryptionKey)
+      );
+      const metadata = await captureStep(
+        "ATTACHMENT_METADATA_LOOKUP_FAILED",
+        () => input.graph.retrieveMediaMetadata(
+          accessToken,
+          attachment.providerMediaRef,
+          installation.phoneNumberId
+        )
       );
       if (!ALLOWED_IMAGE_MIME_TYPES.has(metadata.mimeType) || metadata.mimeType !== attachment.mimeType) {
-        await fail();
-        return;
+        return fail("MIME_TYPE_MISMATCH");
       }
       if (metadata.fileSize && metadata.fileSize > MAX_IMAGE_BYTES) {
-        await fail();
-        return;
+        return fail("IMAGE_TOO_LARGE");
       }
-      const downloaded = await input.graph.downloadMedia(accessToken, metadata.url, MAX_IMAGE_BYTES);
-      if (downloaded.contentType && downloaded.contentType !== metadata.mimeType) {
-        await fail();
-        return;
+      const downloaded = await captureStep(
+        "ATTACHMENT_MEDIA_DOWNLOAD_FAILED",
+        () => input.graph.downloadMedia(accessToken, metadata.url, MAX_IMAGE_BYTES)
+      );
+      if (downloaded.contentType && downloaded.contentType !== metadata.mimeType &&
+          downloaded.contentType !== "application/octet-stream") {
+        return fail("CONTENT_TYPE_MISMATCH");
       }
       if (!matchesImageMagic(downloaded.bytes, metadata.mimeType)) {
-        await fail();
-        return;
+        return fail("IMAGE_SIGNATURE_INVALID");
       }
-      const expectedHash = metadata.sha256 ?? attachment.sha256;
-      if (expectedHash && await sha256Base64(downloaded.bytes) !== expectedHash) {
-        await fail();
-        return;
-      }
-      await input.contentStore.putAttachmentContent(
-        attachment.tenantId,
-        attachment.conversationRef,
-        attachment.attachmentRef,
-        downloaded.bytes
+      const actualHash = await captureStep(
+        "ATTACHMENT_HASH_FAILED",
+        () => sha256Base64(downloaded.bytes)
       );
-      await input.writer.updateAttachmentState({
-        tenantId: attachment.tenantId,
-        conversationRef: attachment.conversationRef,
-        attachmentRef: attachment.attachmentRef,
+      const providerHashes = [metadata.sha256, attachment.sha256].filter(
+        (value): value is string => Boolean(value)
+      );
+      if (providerHashes.length > 0 && !providerHashes.includes(actualHash)) {
+        return fail("HASH_MISMATCH");
+      }
+      const metadataHashMismatch = Boolean(
+        metadata.sha256 && metadata.sha256 !== actualHash && attachment.sha256 === actualHash
+      );
+      await captureStep(
+        "ATTACHMENT_CONTENT_STORE_FAILED",
+        () => input.contentStore.putAttachmentContent(
+          attachment.tenantId,
+          attachment.conversationRef,
+          attachment.attachmentRef,
+          downloaded.bytes
+        )
+      );
+      await captureStep(
+        "ATTACHMENT_STATE_UPDATE_FAILED",
+        () => input.writer.updateAttachmentState({
+          tenantId: attachment.tenantId,
+          conversationRef: attachment.conversationRef,
+          attachmentRef: attachment.attachmentRef,
+          state: "ready",
+          sizeBytes: downloaded.bytes.byteLength,
+          sha256: actualHash
+        })
+      );
+      return {
         state: "ready",
-        sizeBytes: downloaded.bytes.byteLength
-      });
+        ...(metadataHashMismatch ? { reason: "MEDIA_METADATA_HASH_MISMATCH_WEBHOOK_HASH_VERIFIED" } : {})
+      };
     } catch (error) {
       if (error instanceof MetaGraphError && !error.retryable) {
-        await fail();
-        return;
+        return fail(error.code);
       }
       throw error;
     }
   };
+}
+
+async function captureStep<T>(code: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof MetaGraphError || (error instanceof Error && /^[A-Z0-9_]{3,160}$/u.test(error.message))) {
+      throw error;
+    }
+    throw new Error(`${code}_${captureFailureClass(error)}`, { cause: error });
+  }
+}
+
+function captureFailureClass(error: unknown): string {
+  if (!(error instanceof Error)) return "UNKNOWN";
+  const message = error.message.toLowerCase();
+  if (message.includes("redirect")) return "REDIRECT";
+  if (message.includes("network")) return "NETWORK";
+  if (message.includes("fetch")) return "FETCH";
+  if (message.includes("timed out") || message.includes("timeout")) return "TIMEOUT";
+  if (message.includes("arraybuffer") || message.includes("typed array")) return "BINARY_VALUE";
+  if (message.includes("sql") || message.includes("database")) return "DATABASE";
+  if (error.name === "TypeError") return "TYPE_ERROR";
+  if (error.name === "RangeError") return "RANGE_ERROR";
+  return "INTERNAL";
 }
 
 async function sha256Base64(bytes: Uint8Array): Promise<string> {

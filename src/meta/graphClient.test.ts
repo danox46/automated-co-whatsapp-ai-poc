@@ -96,7 +96,31 @@ describe("Meta Graph client", () => {
     expect(downloaded.bytes).toEqual(bytes);
     expect(downloaded.contentType).toBe("image/png");
     expect(request.mock.calls[1][1]?.headers).toEqual({ Authorization: "Bearer provider-token" });
-    expect(request.mock.calls[1][1]?.redirect).toBe("error");
+    expect(request.mock.calls[1][1]?.redirect).toBe("manual");
+  });
+
+  it("follows only a bounded Meta-owned media redirect chain", async () => {
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff]);
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, {
+        status: 302,
+        headers: { location: "https://scontent.xx.fbcdn.net/whatsapp_business/attachment" }
+      }))
+      .mockResolvedValueOnce(new Response(bytes, { headers: { "content-type": "image/jpeg" } }));
+    const client = createMetaGraphClient({
+      appId: "app",
+      appSecret: "secret",
+      graphVersion: "v25.0",
+      fetch: request
+    });
+
+    await expect(client.downloadMedia(
+      "provider-token",
+      "https://lookaside.fbsbx.com/whatsapp_business/attachments/example",
+      1024
+    )).resolves.toMatchObject({ bytes, contentType: "image/jpeg" });
+    expect(String(request.mock.calls[1][0])).toContain(".fbcdn.net/");
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("rejects non-Meta media delivery hosts", async () => {

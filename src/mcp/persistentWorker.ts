@@ -216,7 +216,8 @@ export function createPersistentWhatsAppWorker(
           conversations: env.CONVERSATIONS,
           registry,
           graph: graph as ReturnType<typeof createMetaGraphClient>,
-          encryptionKey: env.INSTALLATION_ENCRYPTION_KEY as string
+          encryptionKey: env.INSTALLATION_ENCRYPTION_KEY as string,
+          ...(attachmentCapture ? { captureAttachment: attachmentCapture } : {})
         });
         const policyResponse = await policyAdmin.fetch(request);
         if (policyResponse) return policyResponse;

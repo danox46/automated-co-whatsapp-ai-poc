@@ -206,17 +206,32 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       if (!Number.isInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 100 * 1024 * 1024) {
         throw new Error("Invalid media download limit");
       }
-      const response = await boundedFetch(request, mediaUrl, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        redirect: "error"
-      }, options.timeoutMs);
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new MetaGraphError("META_MEDIA_DOWNLOAD_FAILED", response.status || 502, response.status === 429 || response.status >= 500);
+      let currentUrl = mediaUrl;
+      for (let hop = 0; hop <= 3; hop += 1) {
+        const response = await boundedFetch(request, currentUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          redirect: "manual"
+        }, options.timeoutMs);
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers.get("location");
+          await response.body?.cancel();
+          if (!location || hop === 3) {
+            throw new MetaGraphError("META_MEDIA_REDIRECT_INVALID", 502, false);
+          }
+          const nextUrl = new URL(location, currentUrl).toString();
+          assertMetaMediaUrl(nextUrl);
+          currentUrl = nextUrl;
+          continue;
+        }
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new MetaGraphError("META_MEDIA_DOWNLOAD_FAILED", response.status || 502, response.status === 429 || response.status >= 500);
+        }
+        const bytes = await readBoundedBytes(response, maximumBytes);
+        const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+        return { bytes, ...(contentType ? { contentType } : {}) };
       }
-      const bytes = await readBoundedBytes(response, maximumBytes);
-      const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
-      return { bytes, ...(contentType ? { contentType } : {}) };
+      throw new MetaGraphError("META_MEDIA_REDIRECT_INVALID", 502, false);
     },
 
     async sendText(

@@ -79,6 +79,10 @@ if ($PilotArguments.Count -gt 0 -and $PilotArguments[0] -eq 'smoke') {
   $scriptName = 'whatsapp-mcp-smoke.mjs'
   $PilotArguments = @($PilotArguments | Select-Object -Skip 1)
 }
+elseif ($PilotArguments.Count -gt 0 -and $PilotArguments[0] -eq 'attachment-smoke') {
+  $scriptName = 'whatsapp-attachment-smoke.mjs'
+  $PilotArguments = @($PilotArguments | Select-Object -Skip 1)
+}
 $scriptPath = Join-Path $PSScriptRoot $scriptName
 $nodeExecutable = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $nodeExecutable) {

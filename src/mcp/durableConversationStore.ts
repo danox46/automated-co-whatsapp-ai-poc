@@ -515,14 +515,19 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     if (update.sizeBytes !== undefined && (!Number.isInteger(update.sizeBytes) || update.sizeBytes < 0)) {
       throw new Error("Invalid attachment size");
     }
+    if (update.sha256 && !/^[A-Za-z0-9+/]{43}=$/u.test(update.sha256)) {
+      throw new Error("Invalid attachment hash");
+    }
     this.assertInitialized();
     this.ctx.storage.sql.exec(
       `UPDATE messages SET attachment_state = ?, media_storage_key = COALESCE(?, media_storage_key),
-        attachment_size_bytes = COALESCE(?, attachment_size_bytes)
+        attachment_size_bytes = COALESCE(?, attachment_size_bytes),
+        attachment_sha256 = COALESCE(?, attachment_sha256)
        WHERE conversation_ref = ? AND attachment_ref = ?`,
       update.state,
       update.storageKey ?? null,
       update.sizeBytes ?? null,
+      update.sha256 ?? null,
       update.conversationRef,
       update.attachmentRef
     );

@@ -7,7 +7,7 @@ const [command, baseUrl, ...argumentsAfterOrigin] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
 if (!adminToken || !command || !baseUrl) {
-  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|invite|reinvite|status|provider-status|conversations|history|disconnect|reconcile-disconnect|delete> <https-origin> [tenant-id] [conversation-ref|label] [internal|client]");
+  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|invite|reinvite|status|provider-status|conversations|history|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [tenant-id] [conversation-ref|label] [attachment-ref|internal|client]");
 }
 
 const origin = new URL(baseUrl).origin;
@@ -94,6 +94,15 @@ if (command === "sandbox-connect") {
   const [tenantId, conversationRef] = argumentsAfterOrigin;
   if (!tenantId || !conversationRef) fail("history requires a tenant ID and conversation reference.");
   response = await fetch(`${origin}/admin/pilot/tenants/${encodeURIComponent(tenantId)}/conversations/${encodeURIComponent(conversationRef)}/history`, { headers });
+} else if (command === "capture-attachment") {
+  const [tenantId, conversationRef, attachmentRef] = argumentsAfterOrigin;
+  if (!tenantId || !conversationRef || !attachmentRef) {
+    fail("capture-attachment requires a tenant ID, conversation reference, and attachment reference.");
+  }
+  response = await fetch(`${origin}/admin/pilot/tenants/${encodeURIComponent(tenantId)}/conversations/${encodeURIComponent(conversationRef)}/attachments/${encodeURIComponent(attachmentRef)}/capture`, {
+    method: "POST",
+    headers
+  });
 } else if (command === "disconnect") {
   const tenantId = argumentsAfterOrigin[0];
   if (!tenantId) fail("disconnect requires a tenant ID.");

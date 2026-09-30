@@ -1,6 +1,8 @@
 import type { DurableConversationNamespace } from "../mcp/durableConversationStore.js";
+import type { InternalStoredAttachment } from "../mcp/conversationHistory.js";
 import { decryptPilotSecret, secureEqualText } from "./pilotCrypto.js";
 import type { createMetaGraphClient } from "./graphClient.js";
+import type { AttachmentCaptureResult } from "./attachmentCapture.js";
 import type { createPilotInstallationRegistry } from "./pilotInstallationStore.js";
 
 const MAX_JSON_BYTES = 32 * 1024;
@@ -11,6 +13,7 @@ export function createWhatsAppPolicyAdminHandler(input: {
   registry: ReturnType<typeof createPilotInstallationRegistry>;
   graph: ReturnType<typeof createMetaGraphClient>;
   encryptionKey: string;
+  captureAttachment?: (attachment: InternalStoredAttachment & { tenantId: string }) => Promise<AttachmentCaptureResult>;
   now?: () => Date;
 }) {
   const now = input.now ?? (() => new Date());
@@ -22,10 +25,14 @@ export function createWhatsAppPolicyAdminHandler(input: {
       const policy = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/policy$/u.exec(url.pathname);
       const conversations = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations$/u.exec(url.pathname);
       const history = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/history$/u.exec(url.pathname);
-      if (!template && !consent && !policy && !conversations && !history) return null;
+      const attachmentCapture = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/attachments\/(att_[A-Za-z0-9_-]{32})\/capture$/u.exec(url.pathname);
+      if (!template && !consent && !policy && !conversations && !history && !attachmentCapture) return null;
       if (!await isAdmin(request, input.adminToken)) return unauthorized();
       if (conversations && request.method === "GET") return listConversations(conversations[1]);
       if (history && request.method === "GET") return getConversationHistory(history[1], history[2], url);
+      if (attachmentCapture && request.method === "POST") {
+        return captureAttachment(attachmentCapture[1], attachmentCapture[2], attachmentCapture[3]);
+      }
       if (request.method !== "PUT") return jsonError("METHOD_NOT_ALLOWED", "Use GET for structured records or PUT for policy changes.", 405);
       if (template) return upsertTemplate(request, template[1], template[2]);
       if (consent) return setConsent(request, consent[1], consent[2]);
@@ -47,6 +54,37 @@ export function createWhatsAppPolicyAdminHandler(input: {
     const result = await stub.getConversationHistory({ conversationRef, limit, ...(cursor ? { cursor } : {}) });
     if (!result) return jsonError("PILOT_CONVERSATION_NOT_FOUND", "The tenant-scoped conversation is unavailable.", 404);
     return json({ ok: true, ...result });
+  }
+
+  async function captureAttachment(tenantId: string, conversationRef: string, attachmentRef: string) {
+    if (!input.captureAttachment) {
+      return jsonError("PILOT_ATTACHMENT_CAPTURE_UNAVAILABLE", "Attachment capture is not configured.", 503);
+    }
+    const stub = await initializedTenant(tenantId);
+    const attachment = await stub.getAttachment(conversationRef, attachmentRef);
+    if (!attachment) {
+      return jsonError("PILOT_ATTACHMENT_NOT_FOUND", "The tenant-scoped attachment is unavailable.", 404);
+    }
+    try {
+      const result = await input.captureAttachment({ tenantId, ...attachment });
+      const updated = await stub.getAttachment(conversationRef, attachmentRef);
+      return json({
+        ok: true,
+        attachment: updated ? {
+          attachmentRef: updated.attachmentRef,
+          kind: updated.kind,
+          mimeType: updated.mimeType,
+          state: updated.state,
+          ...(updated.sizeBytes !== undefined ? { sizeBytes: updated.sizeBytes } : {}),
+          ...(result.reason ? { diagnostic: result.reason } : {})
+        } : null
+      });
+    } catch (error) {
+      const diagnostic = error instanceof Error && /^[A-Z0-9_]{3,160}$/u.test(error.message)
+        ? error.message
+        : "ATTACHMENT_CAPTURE_RETRYABLE_FAILURE";
+      return jsonError(diagnostic, "The provider attachment could not be captured yet.", 502);
+    }
   }
 
   async function upsertTemplate(request: Request, tenantId: string, templateName: string) {

@@ -13,7 +13,7 @@ export type MetaConversationPersistence = {
   tenantId: string;
   conversationRefSecret: string;
   writer: WhatsAppConversationWriter;
-  captureAttachment?: (attachment: InternalStoredAttachment & { tenantId: string }) => Promise<void>;
+  captureAttachment?: (attachment: InternalStoredAttachment & { tenantId: string }) => Promise<unknown>;
 };
 
 export async function persistMetaConversationEvents(
