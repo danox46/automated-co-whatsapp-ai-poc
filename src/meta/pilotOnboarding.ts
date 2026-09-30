@@ -453,6 +453,15 @@ export function createPilotOnboardingHandler(
         webhookSubscribedAt: refreshedAt.toISOString(),
         status: "connected"
       }, refreshedAt);
+      const authorizationSession = await dependencies.createAuthorizationSession(
+        tenantId,
+        ["openid", ...SUPPORTED_WHATSAPP_MCP_SCOPES]
+      );
+      const headers = securityHeaders({ "Content-Type": "application/json; charset=utf-8" });
+      headers.append("Set-Cookie", authorizationCookie(
+        authorizationSession.rawSession,
+        authorizationSession.expiresAt
+      ));
       return Response.json({
         ok: true,
         status: "connected",
@@ -460,9 +469,10 @@ export function createPilotOnboardingHandler(
         providerPhoneVerified: true,
         providerSubscription: "subscribed",
         conversationDataRetained: true,
-        credentialRefreshedAt: refreshedAt.toISOString()
+        credentialRefreshedAt: refreshedAt.toISOString(),
+        oauthReady: true
       }, {
-        headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
+        headers
       });
     } catch (error) {
       const code = error instanceof MetaGraphError ? error.code : "WHATSAPP_SANDBOX_REFRESH_FAILED";

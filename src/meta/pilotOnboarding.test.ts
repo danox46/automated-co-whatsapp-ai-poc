@@ -261,12 +261,18 @@ describe("closed-pilot onboarding", () => {
       tenantId: "automated-co-sandbox",
       providerPhoneVerified: true,
       providerSubscription: "subscribed",
-      conversationDataRetained: true
+      conversationDataRetained: true,
+      oauthReady: true
     });
+    expect(response?.headers.get("set-cookie")).toContain("__Host-wa_pilot_session=");
     expect(fixture.installations.get("automated-co-sandbox")?.connectedAt)
       .toBe("2026-09-01T12:00:00.000Z");
     expect(fixture.deleteConversationData).not.toHaveBeenCalled();
     expect(fixture.graph.subscribeApp).toHaveBeenCalled();
+    expect(fixture.createAuthorizationSession).toHaveBeenCalledWith(
+      "automated-co-sandbox",
+      expect.arrayContaining(["openid", "whatsapp.messages.send"])
+    );
   });
 
   it("repairs an orphaned connected sandbox seat before creating a replacement invitation", async () => {
