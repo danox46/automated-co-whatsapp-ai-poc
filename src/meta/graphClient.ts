@@ -234,6 +234,23 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       throw new MetaGraphError("META_MEDIA_REDIRECT_INVALID", 502, false);
     },
 
+    async listFlows(accessToken: string, wabaId: string): Promise<Array<{ id: string; name: string; status: string }>> {
+      assertProviderId(wabaId, "WABA");
+      const url = new URL(`${base}/${encodeURIComponent(wabaId)}/flows`);
+      url.searchParams.set("fields", "id,name,status");
+      url.searchParams.set("limit", "100");
+      const response = await boundedFetch(request, url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      }, options.timeoutMs);
+      const body = await readMetaJson(response);
+      if (!response.ok) throw metaError(response, body, "META_FLOW_LOOKUP_FAILED");
+      const rows = Array.isArray(body.data) ? body.data.filter(isRecord) : [];
+      return rows.flatMap(row => {
+        const id = readString(row.id), name = readString(row.name), status = readString(row.status);
+        return id && name && status ? [{ id, name, status }] : [];
+      });
+    },
+
     async sendText(
       accessToken: string,
       phoneNumberId: string,
