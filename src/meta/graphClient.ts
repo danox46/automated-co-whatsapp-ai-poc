@@ -234,6 +234,63 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       throw new MetaGraphError("META_MEDIA_REDIRECT_INVALID", 502, false);
     },
 
+    async listFlows(accessToken: string, wabaId: string): Promise<Array<{ id: string; name: string; status: string }>> {
+      assertProviderId(wabaId, "WABA");
+      const url = new URL(`${base}/${encodeURIComponent(wabaId)}/flows`);
+      url.searchParams.set("fields", "id,name,status");
+      url.searchParams.set("limit", "100");
+      const response = await boundedFetch(request, url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      }, options.timeoutMs);
+      const body = await readMetaJson(response);
+      if (!response.ok) throw metaError(response, body, "META_FLOW_LOOKUP_FAILED");
+      const rows = Array.isArray(body.data) ? body.data.filter(isRecord) : [];
+      return rows.flatMap(row => {
+        const id = readString(row.id), name = readString(row.name), status = readString(row.status);
+        return id && name && status ? [{ id, name, status }] : [];
+      });
+    },
+
+    async createFlow(accessToken: string, wabaId: string, name: string, category: string): Promise<string> {
+      assertProviderId(wabaId, "WABA");
+      const form = new FormData();
+      form.set("name", name);
+      form.set("categories", JSON.stringify([category]));
+      const response = await boundedFetch(request, `${base}/${wabaId}/flows`, {
+        method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form
+      }, options.timeoutMs);
+      const body = await readMetaJson(response);
+      if (!response.ok) throw metaError(response, body, "META_FLOW_CREATE_FAILED");
+      const id = readString(body.id);
+      if (!id || !/^\d{3,32}$/u.test(id)) throw new MetaGraphError("META_FLOW_CREATE_RESPONSE_INVALID", 502, false);
+      return id;
+    },
+
+    async uploadFlowJson(accessToken: string, flowId: string, flowJson: string): Promise<Array<{ code: string }>> {
+      assertProviderId(flowId, "Flow");
+      const form = new FormData();
+      form.set("file", new Blob([flowJson], { type: "application/json" }), "flow.json");
+      form.set("name", "flow.json");
+      form.set("asset_type", "FLOW_JSON");
+      const response = await boundedFetch(request, `${base}/${flowId}/assets`, {
+        method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form
+      }, options.timeoutMs);
+      const body = await readMetaJson(response);
+      if (!response.ok) throw metaError(response, body, "META_FLOW_UPLOAD_FAILED");
+      return (Array.isArray(body.validation_errors) ? body.validation_errors : []).filter(isRecord).map(error => ({
+        code: readString(error.error) ?? "META_FLOW_VALIDATION_ERROR"
+      }));
+    },
+
+    async publishFlow(accessToken: string, flowId: string): Promise<void> {
+      assertProviderId(flowId, "Flow");
+      const response = await boundedFetch(request, `${base}/${flowId}/publish`, {
+        method: "POST", headers: { Authorization: `Bearer ${accessToken}` }
+      }, options.timeoutMs);
+      const body = await readMetaJson(response);
+      if (!response.ok || body.success !== true) throw metaError(response, body, "META_FLOW_PUBLISH_FAILED");
+    },
+
     async sendText(
       accessToken: string,
       phoneNumberId: string,
