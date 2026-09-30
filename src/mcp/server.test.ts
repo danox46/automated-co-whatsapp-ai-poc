@@ -2,6 +2,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { describe, expect, it } from "vitest";
 import { createProtectedWhatsAppMcpHandler } from "./server.js";
 import type { WhatsAppMessagingCapability } from "./outboundPolicy.js";
+import type { WhatsAppAttachmentContentReader } from "./attachmentContent.js";
 import {
   InMemoryWhatsAppConversationStore,
   type WhatsAppConversationReader
@@ -11,7 +12,8 @@ const resource = "https://auth.automatedandco.danienremoto.com";
 
 function createAuthorizedHandler(
   messaging?: WhatsAppMessagingCapability,
-  conversationReader?: WhatsAppConversationReader
+  conversationReader?: WhatsAppConversationReader,
+  attachmentReader?: WhatsAppAttachmentContentReader
 ) {
   return createProtectedWhatsAppMcpHandler({
     resource,
@@ -22,7 +24,7 @@ function createAuthorizedHandler(
           subject: "test-owner",
           tenantId: "tenant_1",
           audience: resource,
-          scopes: new Set(["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.conversations.read", "whatsapp.messages.send"])
+          scopes: new Set(["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.conversations.read", "whatsapp.media.read", "whatsapp.messages.send"])
         };
       }
       if (token === "policy-only-token") {
@@ -36,7 +38,8 @@ function createAuthorizedHandler(
       return null;
     },
     messaging,
-    conversationReader
+    conversationReader,
+    attachmentReader
   });
 }
 
@@ -67,7 +70,7 @@ describe("protected WhatsApp MCP handler", () => {
     expect(await response.json()).toEqual({
       resource,
       authorization_servers: [resource],
-      scopes_supported: ["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.conversations.read", "whatsapp.messages.send"],
+      scopes_supported: ["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.conversations.read", "whatsapp.media.read", "whatsapp.messages.send"],
       bearer_methods_supported: ["header"],
       resource_documentation: "https://automatedandco.danienremoto.com/mcp/whatsapp/",
       resource_policy_uri: "https://automatedandco.danienremoto.com/mcp/whatsapp/privacidad/",
@@ -382,6 +385,61 @@ describe("protected WhatsApp MCP handler", () => {
       }
     });
     expect(hybridReply.isError).toBe(true);
+    await client.close();
+  });
+
+  it("returns a tenant-scoped inbound image as native MCP image content", async () => {
+    const attachmentReader: WhatsAppAttachmentContentReader = {
+      async getAttachmentContent(_principal, conversationRef, attachmentRef) {
+        if (conversationRef !== "conversation_123" || attachmentRef !== `att_${"a".repeat(32)}`) return null;
+        return {
+          attachment: {
+            attachmentRef,
+            kind: "image",
+            mimeType: "image/png",
+            sizeBytes: 8,
+            state: "ready"
+          },
+          data: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        };
+      }
+    };
+    const handler = createAuthorizedHandler(undefined, undefined, attachmentReader);
+    const client = new Client({ name: "attachment-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer valid-test-token" } },
+      fetch: (url, init) => handler.fetch(new Request(url, init))
+    });
+
+    await client.connect(transport);
+    const tools = await client.listTools();
+    const tool = tools.tools.find((candidate) => candidate.name === "whatsapp_get_attachment");
+    expect(tool?.annotations).toMatchObject({
+      readOnlyHint: true,
+      openWorldHint: false,
+      destructiveHint: false
+    });
+    expect(tool?._meta?.securitySchemes).toEqual([
+      { type: "oauth2", scopes: ["whatsapp.media.read"] }
+    ]);
+
+    const result = await client.callTool({
+      name: "whatsapp_get_attachment",
+      arguments: {
+        conversationRef: "conversation_123",
+        attachmentRef: `att_${"a".repeat(32)}`
+      }
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      found: true,
+      attachment: { kind: "image", mimeType: "image/png", state: "ready" }
+    });
+    expect(result.content[1]).toMatchObject({
+      type: "image",
+      mimeType: "image/png",
+      data: "iVBORw0KGgo="
+    });
     await client.close();
   });
 });

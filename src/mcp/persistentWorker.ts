@@ -1,5 +1,7 @@
 import {
   createDurableConversationReader,
+  createDurableAttachmentContentReader,
+  createDurableAttachmentContentStore,
   createDurableConversationRetentionController,
   createDurableConversationWriter,
   WhatsAppConversationDurableObject,
@@ -16,6 +18,7 @@ import {
   type MetaWebhookEnv
 } from "../meta/webhook.js";
 import { createMetaGraphClient } from "../meta/graphClient.js";
+import { createMetaAttachmentCapture } from "../meta/attachmentCapture.js";
 import {
   createPilotInstallationRegistry,
   WhatsAppPilotInstallationDurableObject,
@@ -121,6 +124,14 @@ export function createPersistentWhatsAppWorker(
           return true;
         }
       }) : undefined);
+      const attachmentReader = createDurableAttachmentContentReader(env.CONVERSATIONS);
+      const attachmentCapture = graph ? createMetaAttachmentCapture({
+        registry,
+        graph,
+        encryptionKey: env.INSTALLATION_ENCRYPTION_KEY as string,
+        contentStore: createDurableAttachmentContentStore(env.CONVERSATIONS),
+        writer
+      }) : undefined;
 
       let runtimeTokenVerifier = options.verifyToken;
       let resource = safePublicOrigin(env.PUBLIC_ORIGIN);
@@ -220,7 +231,8 @@ export function createPersistentWhatsAppWorker(
         return tenantId ? {
           tenantId,
           conversationRefSecret: env.CONVERSATION_REF_SECRET,
-          writer
+          writer,
+          ...(attachmentCapture ? { captureAttachment: attachmentCapture } : {})
         } : null;
       });
       if (webhookResponse) return webhookResponse;
@@ -232,6 +244,8 @@ export function createPersistentWhatsAppWorker(
           rawWebhookPayloadRetention: false,
           retention: retentionPolicy,
           conversationReadTools: true,
+          inboundImageCapture: Boolean(attachmentCapture),
+          attachmentReadTool: Boolean(attachmentReader),
           pilotOnboardingConfigured: pilotConfigured,
           sandboxConfigured: Boolean(sandbox),
           sandboxConfigurationValid,
@@ -252,6 +266,7 @@ export function createPersistentWhatsAppWorker(
         resource: resource ?? "https://unconfigured.invalid",
         authorizationServer: resource ?? "https://unconfigured.invalid",
         conversationReader: createDurableConversationReader(env.CONVERSATIONS, retentionPolicy),
+        attachmentReader,
         getConnectionStatus: async (principal) => {
           const installation = await registry.getInstallation(principal.tenantId);
           return {

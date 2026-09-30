@@ -69,6 +69,47 @@ describe("Meta Graph client", () => {
     expect(String(request.mock.calls[0][0])).not.toContain("token");
   });
 
+  it("retrieves and downloads media through the bounded authenticated media route", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({
+        url: "https://lookaside.fbsbx.com/whatsapp_business/attachments/example",
+        mime_type: "image/png",
+        sha256: "provider-sha256",
+        file_size: bytes.byteLength
+      }))
+      .mockResolvedValueOnce(new Response(bytes, {
+        headers: { "content-type": "image/png", "content-length": String(bytes.byteLength) }
+      }));
+    const client = createMetaGraphClient({
+      appId: "app",
+      appSecret: "secret",
+      graphVersion: "v25.0",
+      fetch: request
+    });
+
+    const metadata = await client.retrieveMediaMetadata("provider-token", "123456789", "987654321");
+    expect(metadata).toMatchObject({ mimeType: "image/png", fileSize: bytes.byteLength });
+    expect(String(request.mock.calls[0][0])).toContain("phone_number_id=987654321");
+    expect(String(request.mock.calls[0][0])).not.toContain("provider-token");
+    const downloaded = await client.downloadMedia("provider-token", metadata.url, 1024);
+    expect(downloaded.bytes).toEqual(bytes);
+    expect(downloaded.contentType).toBe("image/png");
+    expect(request.mock.calls[1][1]?.headers).toEqual({ Authorization: "Bearer provider-token" });
+    expect(request.mock.calls[1][1]?.redirect).toBe("error");
+  });
+
+  it("rejects non-Meta media delivery hosts", async () => {
+    const client = createMetaGraphClient({
+      appId: "app",
+      appSecret: "secret",
+      graphVersion: "v25.0",
+      fetch: vi.fn<typeof fetch>()
+    });
+    await expect(client.downloadMedia("provider-token", "https://example.com/private", 1024))
+      .rejects.toMatchObject({ code: "META_MEDIA_URL_INVALID" });
+  });
+
   it("returns sanitized provider errors without response messages", async () => {
     const client = createMetaGraphClient({
       appId: "app",

@@ -27,6 +27,20 @@ export type WhatsAppMessageStatus =
   | "read"
   | "failed";
 
+export type WhatsAppAttachmentKind = "image" | "audio" | "video" | "document" | "sticker";
+export type WhatsAppAttachmentState = "pending" | "ready" | "failed" | "unsupported";
+
+export type StoredMessageAttachment = {
+  attachmentRef: string;
+  kind: WhatsAppAttachmentKind;
+  mimeType: string;
+  sha256?: string;
+  caption?: string;
+  filename?: string;
+  sizeBytes?: number;
+  state: WhatsAppAttachmentState;
+};
+
 export type ConversationPolicyState = {
   recipientOptedOut: boolean;
   automationPaused: boolean;
@@ -52,6 +66,7 @@ export type StoredConversationMessage = {
   kind: WhatsAppMessageKind;
   text?: string;
   templateName?: string;
+  attachment?: StoredMessageAttachment;
   occurredAt: string;
   status: WhatsAppMessageStatus;
 };
@@ -91,6 +106,27 @@ export type InternalConversationMessage = StoredConversationMessage & {
   providerAccountRef: string;
   providerParticipantRef: string;
   displayName?: string;
+  attachment?: StoredMessageAttachment & {
+    providerMediaRef: string;
+    storageKey?: string;
+  };
+};
+
+export type InternalAttachmentStateUpdate = {
+  tenantId: string;
+  conversationRef: string;
+  attachmentRef: string;
+  state: Extract<WhatsAppAttachmentState, "ready" | "failed">;
+  storageKey?: string;
+  sizeBytes?: number;
+};
+
+export type InternalStoredAttachment = StoredMessageAttachment & {
+  conversationRef: string;
+  messageRef: string;
+  providerAccountRef: string;
+  providerMediaRef: string;
+  storageKey?: string;
 };
 
 export type InternalMessageStatusUpdate = {
@@ -130,9 +166,18 @@ export interface WhatsAppConversationReader {
 export interface WhatsAppConversationWriter {
   ingestMessage(message: InternalConversationMessage): Promise<void>;
   updateMessageStatus(update: InternalMessageStatusUpdate): Promise<void>;
+  updateAttachmentState(update: InternalAttachmentStateUpdate): Promise<void>;
   updatePolicyState(patch: InternalConversationPolicyPatch): Promise<void>;
   markConversationRead(tenantId: string, conversationRef: string, readAt: string): Promise<void>;
   pruneMessages(tenantId: string, occurredBefore: string): Promise<number>;
+}
+
+export interface WhatsAppAttachmentReader {
+  getAttachment(
+    tenantId: string,
+    conversationRef: string,
+    attachmentRef: string
+  ): Promise<InternalStoredAttachment | null>;
 }
 
 export interface WhatsAppConversationEnforcementReader {
@@ -200,6 +245,7 @@ implements WhatsAppConversationReader, WhatsAppConversationWriter, WhatsAppConve
       kind: message.kind,
       ...(message.text ? { text: message.text } : {}),
       ...(message.templateName ? { templateName: message.templateName } : {}),
+      ...(message.attachment ? { attachment: publicAttachment(message.attachment) } : {}),
       occurredAt: message.occurredAt,
       status: message.status
     };
@@ -224,6 +270,16 @@ implements WhatsAppConversationReader, WhatsAppConversationWriter, WhatsAppConve
       return;
     }
     message.status = laterStatus(message.status, update.status);
+  }
+
+  async updateAttachmentState(update: InternalAttachmentStateUpdate): Promise<void> {
+    const message = [...this.tenant(update.tenantId).messages.values()].find(
+      (candidate) => candidate.conversationRef === update.conversationRef &&
+        candidate.attachment?.attachmentRef === update.attachmentRef
+    );
+    if (!message?.attachment) return;
+    message.attachment.state = update.state;
+    if (update.sizeBytes !== undefined) message.attachment.sizeBytes = update.sizeBytes;
   }
 
   async updatePolicyState(patch: InternalConversationPolicyPatch): Promise<void> {
@@ -358,6 +414,22 @@ implements WhatsAppConversationReader, WhatsAppConversationWriter, WhatsAppConve
     this.tenants.set(tenantId, created);
     return created;
   }
+}
+
+function publicAttachment(
+  attachment: InternalConversationMessage["attachment"]
+): StoredMessageAttachment {
+  if (!attachment) throw new Error("Attachment is required");
+  return {
+    attachmentRef: attachment.attachmentRef,
+    kind: attachment.kind,
+    mimeType: attachment.mimeType,
+    ...(attachment.sha256 ? { sha256: attachment.sha256 } : {}),
+    ...(attachment.caption ? { caption: attachment.caption } : {}),
+    ...(attachment.filename ? { filename: attachment.filename } : {}),
+    ...(attachment.sizeBytes !== undefined ? { sizeBytes: attachment.sizeBytes } : {}),
+    state: attachment.state
+  };
 }
 
 export function summarizeConversation(

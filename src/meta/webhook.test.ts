@@ -168,6 +168,72 @@ describe("Meta WhatsApp webhook", () => {
     expect(result.conversations).toHaveLength(1);
   });
 
+  it("stores an opaque inbound image reference and hands private provider metadata to capture", async () => {
+    const store = new InMemoryWhatsAppConversationStore();
+    const captures: Array<Record<string, unknown>> = [];
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{
+        changes: [{
+          field: "messages",
+          value: {
+            metadata: { phone_number_id: "400500600" },
+            contacts: [{ wa_id: "573001112233" }],
+            messages: [{
+              from: "573001112233",
+              id: "wamid.inbound-image",
+              timestamp: "1788606000",
+              type: "image",
+              image: {
+                id: "1234567890123",
+                mime_type: "image/jpeg",
+                sha256: "provider-sha256",
+                caption: "A test image"
+              }
+            }]
+          }
+        }]
+      }]
+    });
+    const response = await handleMetaWhatsAppWebhook(new Request(
+      new URL(META_WHATSAPP_WEBHOOK_PATH, origin),
+      { method: "POST", headers: { "x-hub-signature-256": sign(body) }, body }
+    ), env, {
+      tenantId: "tenant-1",
+      conversationRefSecret: "fixed-conversation-reference-secret",
+      writer: store,
+      captureAttachment: async (attachment) => { captures.push(attachment); }
+    });
+
+    expect(response?.status).toBe(200);
+    const list = await store.listConversations({
+      subject: "owner",
+      tenantId: "tenant-1",
+      audience: origin,
+      scopes: new Set(["whatsapp.conversations.read"])
+    }, {});
+    const history = await store.getConversationHistory({
+      subject: "owner",
+      tenantId: "tenant-1",
+      audience: origin,
+      scopes: new Set(["whatsapp.conversations.read"])
+    }, { conversationRef: list.conversations[0].conversationRef });
+    expect(history?.messages[0]).toMatchObject({
+      messageRef: "wamid.inbound-image",
+      kind: "image",
+      attachment: {
+        kind: "image",
+        mimeType: "image/jpeg",
+        caption: "A test image",
+        state: "pending"
+      }
+    });
+    expect(history?.messages[0].attachment?.attachmentRef).toMatch(/^att_[A-Za-z0-9_-]{32}$/);
+    expect(captures).toHaveLength(1);
+    expect(captures[0]).toMatchObject({ providerMediaRef: "1234567890123" });
+    expect(JSON.stringify(history)).not.toContain("1234567890123");
+  });
+
   it("returns a retryable error instead of acknowledging a configured persistence failure", async () => {
     const body = JSON.stringify({
       object: "whatsapp_business_account",
@@ -200,6 +266,7 @@ describe("Meta WhatsApp webhook", () => {
         ingestMessage: fail,
         updateMessageStatus: fail,
         updatePolicyState: fail,
+        updateAttachmentState: fail,
         markConversationRead: fail,
         pruneMessages: fail
       }

@@ -22,6 +22,13 @@ export type MetaProviderResult = {
   status: "accepted";
 };
 
+export type MetaMediaMetadata = {
+  url: string;
+  mimeType: string;
+  sha256?: string;
+  fileSize?: number;
+};
+
 export class MetaGraphError extends Error {
   constructor(
     public readonly code: string,
@@ -161,6 +168,57 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       return { name: templateName, category, languageCode };
     },
 
+    async retrieveMediaMetadata(
+      accessToken: string,
+      mediaId: string,
+      phoneNumberId: string
+    ): Promise<MetaMediaMetadata> {
+      assertProviderId(mediaId, "media");
+      assertProviderId(phoneNumberId, "phone number");
+      const url = new URL(`${base}/${encodeURIComponent(mediaId)}`);
+      url.searchParams.set("phone_number_id", phoneNumberId);
+      const response = await boundedFetch(request, url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      }, options.timeoutMs);
+      const body = await readMetaJson(response);
+      const mediaUrl = readString(body.url);
+      const mimeType = readString(body.mime_type);
+      if (!response.ok || !mediaUrl || !mimeType) {
+        throw metaError(response, body, "META_MEDIA_LOOKUP_FAILED");
+      }
+      assertMetaMediaUrl(mediaUrl);
+      const sha256 = readString(body.sha256);
+      const fileSize = readPositiveNumber(body.file_size);
+      return {
+        url: mediaUrl,
+        mimeType,
+        ...(sha256 ? { sha256 } : {}),
+        ...(fileSize ? { fileSize } : {})
+      };
+    },
+
+    async downloadMedia(
+      accessToken: string,
+      mediaUrl: string,
+      maximumBytes: number
+    ): Promise<{ bytes: Uint8Array; contentType?: string }> {
+      assertMetaMediaUrl(mediaUrl);
+      if (!Number.isInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 100 * 1024 * 1024) {
+        throw new Error("Invalid media download limit");
+      }
+      const response = await boundedFetch(request, mediaUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        redirect: "error"
+      }, options.timeoutMs);
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new MetaGraphError("META_MEDIA_DOWNLOAD_FAILED", response.status || 502, response.status === 429 || response.status >= 500);
+      }
+      const bytes = await readBoundedBytes(response, maximumBytes);
+      const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+      return { bytes, ...(contentType ? { contentType } : {}) };
+    },
+
     async sendText(
       accessToken: string,
       phoneNumberId: string,
@@ -222,6 +280,49 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
     const messageRef = isRecord(messages[0]) ? readString(messages[0].id) : null;
     if (!response.ok || !messageRef) throw metaError(response, payload, "META_MESSAGE_DISPATCH_FAILED");
     return { messageRef, status: "accepted" };
+  }
+}
+
+async function readBoundedBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > maximumBytes) {
+    await response.body?.cancel();
+    throw new MetaGraphError("META_MEDIA_TOO_LARGE", 413, false);
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel();
+      throw new MetaGraphError("META_MEDIA_TOO_LARGE", 413, false);
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}
+
+function assertMetaMediaUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new MetaGraphError("META_MEDIA_URL_INVALID", 502, false);
+  }
+  const hostname = url.hostname.toLowerCase();
+  const allowed = hostname === "lookaside.fbsbx.com" || hostname.endsWith(".fbcdn.net");
+  if (url.protocol !== "https:" || !allowed || url.username || url.password) {
+    throw new MetaGraphError("META_MEDIA_URL_INVALID", 502, false);
   }
 }
 

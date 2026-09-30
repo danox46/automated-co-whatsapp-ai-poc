@@ -19,6 +19,7 @@ export const REQUIRED_WHATSAPP_MCP_SCOPES = [
 export const SUPPORTED_WHATSAPP_MCP_SCOPES = [
   ...REQUIRED_WHATSAPP_MCP_SCOPES,
   "whatsapp.conversations.read",
+  "whatsapp.media.read",
   "whatsapp.messages.send"
 ] as const;
 

@@ -26,11 +26,13 @@ import {
   MAX_MESSAGE_PAGE_SIZE,
   type WhatsAppConversationReader
 } from "./conversationHistory.js";
+import type { WhatsAppAttachmentContentReader } from "./attachmentContent.js";
 
 const POLICY_READ_SCOPE = "whatsapp.policy.read";
 const CONNECTION_READ_SCOPE = "whatsapp.connection.read";
 const CONVERSATION_READ_SCOPE = "whatsapp.conversations.read";
 const MESSAGE_SEND_SCOPE = "whatsapp.messages.send";
+const MEDIA_READ_SCOPE = "whatsapp.media.read";
 
 type OAuth2SecurityScheme = {
   type: "oauth2";
@@ -43,6 +45,7 @@ const TOOL_OAUTH_SCOPES: Readonly<Record<string, readonly string[]>> = {
   whatsapp_evaluate_action: [POLICY_READ_SCOPE],
   whatsapp_list_conversations: [CONVERSATION_READ_SCOPE],
   whatsapp_get_conversation_history: [CONVERSATION_READ_SCOPE],
+  whatsapp_get_attachment: [MEDIA_READ_SCOPE],
   whatsapp_reply_to_inbound: [MESSAGE_SEND_SCOPE],
   whatsapp_send_template: [MESSAGE_SEND_SCOPE]
 };
@@ -152,6 +155,7 @@ export type CreateWhatsAppMcpHandlerOptions = {
   verifyToken?: WhatsAppMcpTokenVerifier;
   getConnectionStatus?: (principal: WhatsAppMcpPrincipal) => Promise<WhatsAppConnectionStatus>;
   conversationReader?: WhatsAppConversationReader;
+  attachmentReader?: WhatsAppAttachmentContentReader;
   messaging?: WhatsAppMessagingCapability;
 };
 
@@ -267,6 +271,16 @@ const conversationMessageSchema = z.object({
   ]),
   text: z.string().optional(),
   templateName: z.string().optional(),
+  attachment: z.object({
+    attachmentRef: z.string(),
+    kind: z.enum(["image", "audio", "video", "document", "sticker"]),
+    mimeType: z.string(),
+    sha256: z.string().optional(),
+    caption: z.string().optional(),
+    filename: z.string().optional(),
+    sizeBytes: z.number().int().nonnegative().optional(),
+    state: z.enum(["pending", "ready", "failed", "unsupported"])
+  }).optional(),
   occurredAt: z.string(),
   status: z.enum(["received", "accepted", "sent", "delivered", "read", "failed"])
 });
@@ -293,6 +307,31 @@ const conversationHistoryOutputSchema = z.discriminatedUnion("found", [
   })
 ]);
 
+const attachmentOutputSchema = z.discriminatedUnion("found", [
+  z.object({
+    found: z.literal(true),
+    attachment: z.object({
+      attachmentRef: z.string(),
+      kind: z.enum(["image", "audio", "video", "document", "sticker"]),
+      mimeType: z.string(),
+      sha256: z.string().optional(),
+      caption: z.string().optional(),
+      filename: z.string().optional(),
+      sizeBytes: z.number().int().nonnegative().optional(),
+      state: z.literal("ready")
+    })
+  }),
+  z.object({
+    found: z.literal(false),
+    conversationRef: z.string(),
+    attachmentRef: z.string(),
+    error: z.object({
+      code: z.literal("WHATSAPP_ATTACHMENT_UNAVAILABLE"),
+      message: z.string()
+    })
+  })
+]);
+
 function textResult<T extends Record<string, unknown>>(value: T) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -313,6 +352,15 @@ function outboundResult(value: WhatsAppOutboundResult) {
     structuredContent: value,
     ...(value.ok ? {} : { isError: true as const })
   };
+}
+
+function base64FromBytes(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 32 * 1024;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function oauthErrorResult(
@@ -363,6 +411,7 @@ function createWhatsAppPolicyServer(
   resource: string,
   getConnectionStatus: NonNullable<CreateWhatsAppMcpHandlerOptions["getConnectionStatus"]>,
   conversationReader?: WhatsAppConversationReader,
+  attachmentReader?: WhatsAppAttachmentContentReader,
   messaging?: WhatsAppMessagingCapability
 ) {
   const server = new McpServer(
@@ -453,6 +502,55 @@ function createWhatsAppPolicyServer(
           { found: true as const, ...result },
           "Structured conversation history is available in structuredContent."
         );
+      }
+    );
+  }
+
+  if (attachmentReader) {
+    server.registerTool(
+      "whatsapp_get_attachment",
+      {
+        title: "Read a WhatsApp attachment",
+        description: "Returns one tenant-scoped inbound image as native MCP image content using opaque conversation and attachment references. Provider media IDs, temporary Meta URLs, and storage keys are never returned.",
+        inputSchema: z.strictObject({
+          conversationRef: z.string().trim().min(1).max(200),
+          attachmentRef: z.string().regex(/^att_[A-Za-z0-9_-]{32}$/)
+        }),
+        outputSchema: attachmentOutputSchema,
+        annotations: {
+          readOnlyHint: true,
+          openWorldHint: false,
+          destructiveHint: false
+        },
+        _meta: oauthSecurityMetadata([MEDIA_READ_SCOPE])
+      },
+      async (input) => {
+        const authError = toolAuthorizationError(principal, resource, [MEDIA_READ_SCOPE]);
+        if (authError) return authError;
+        const result = await attachmentReader.getAttachmentContent(
+          principal as WhatsAppMcpPrincipal,
+          input.conversationRef,
+          input.attachmentRef
+        );
+        if (!result) {
+          const unavailable = {
+            found: false as const,
+            conversationRef: input.conversationRef,
+            attachmentRef: input.attachmentRef,
+            error: {
+              code: "WHATSAPP_ATTACHMENT_UNAVAILABLE" as const,
+              message: "The attachment is unavailable, still processing, or does not belong to this conversation."
+            }
+          };
+          return { ...structuredOnlyResult(unavailable, unavailable.error.message), isError: true as const };
+        }
+        return {
+          content: [
+            { type: "text" as const, text: "The authenticated WhatsApp image is attached." },
+            { type: "image" as const, data: base64FromBytes(result.data), mimeType: result.attachment.mimeType }
+          ],
+          structuredContent: { found: true as const, attachment: result.attachment }
+        };
       }
     );
   }
@@ -621,6 +719,7 @@ export function createProtectedWhatsAppMcpHandler(options: CreateWhatsAppMcpHand
         options.resource,
         getConnectionStatus,
         options.conversationReader,
+        options.attachmentReader,
         options.messaging
       ));
       return advertiseTopLevelToolSecuritySchemes(await handler.fetch(request));

@@ -18,6 +18,7 @@ const scopes = [
   "whatsapp.policy.read",
   "whatsapp.connection.read",
   "whatsapp.conversations.read",
+  "whatsapp.media.read",
   "whatsapp.messages.send",
 ];
 const adminHeaders = { Authorization: `Bearer ${adminToken}` };

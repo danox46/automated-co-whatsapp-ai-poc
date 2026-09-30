@@ -1,5 +1,6 @@
 import type {
   InternalConversationMessage,
+  InternalStoredAttachment,
   InternalMessageStatusUpdate,
   WhatsAppConversationWriter,
   WhatsAppMessageKind,
@@ -12,6 +13,7 @@ export type MetaConversationPersistence = {
   tenantId: string;
   conversationRefSecret: string;
   writer: WhatsAppConversationWriter;
+  captureAttachment?: (attachment: InternalStoredAttachment & { tenantId: string }) => Promise<void>;
 };
 
 export async function persistMetaConversationEvents(
@@ -42,6 +44,14 @@ export async function persistMetaConversationEvents(
       );
       const contact = contacts.find((candidate) => readString(candidate.wa_id) === providerParticipantRef);
       const profile = readRecord(contact?.profile);
+      const attachment = await messageAttachment(
+        rawMessage,
+        persistence.tenantId,
+        conversationRef,
+        messageRef,
+        providerAccountRef,
+        persistence.conversationRefSecret
+      );
       const normalized: InternalConversationMessage = {
         tenantId: persistence.tenantId,
         conversationRef,
@@ -52,10 +62,20 @@ export async function persistMetaConversationEvents(
         direction: "inbound",
         kind: messageKind(rawMessage.type),
         ...messageContent(rawMessage),
+        ...(attachment ? { attachment } : {}),
         occurredAt,
         status: "received"
       };
       await persistence.writer.ingestMessage(normalized);
+      if (attachment && persistence.captureAttachment) {
+        await persistence.captureAttachment({
+          tenantId: persistence.tenantId,
+          conversationRef,
+          messageRef,
+          providerAccountRef,
+          ...attachment
+        });
+      }
       messagesStored += 1;
     }
 
@@ -104,6 +124,33 @@ export async function opaqueConversationRef(
   return `conv_${base64.slice(0, 32)}`;
 }
 
+export async function opaqueAttachmentRef(
+  tenantId: string,
+  conversationRef: string,
+  messageRef: string,
+  providerMediaRef: string,
+  secret: string
+): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`attachment\u0000${tenantId}\u0000${conversationRef}\u0000${messageRef}\u0000${providerMediaRef}`)
+  ));
+  const base64 = btoa(String.fromCharCode(...signature))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+  return `att_${base64.slice(0, 32)}`;
+}
+
 function* messageChangeValues(payload: unknown): Generator<RecordLike> {
   const envelope = readRecord(payload);
   for (const entry of readArray(envelope?.entry)) {
@@ -128,6 +175,41 @@ function messageContent(message: RecordLike): { text?: string; templateName?: st
   const interactiveText = readString(readRecord(interactive?.button_reply)?.title)
     ?? readString(readRecord(interactive?.list_reply)?.title);
   return interactiveText ? { text: truncate(interactiveText, 4096) } : {};
+}
+
+async function messageAttachment(
+  message: RecordLike,
+  tenantId: string,
+  conversationRef: string,
+  messageRef: string,
+  providerAccountRef: string,
+  secret: string
+): Promise<InternalConversationMessage["attachment"] | null> {
+  const kind = messageKind(message.type);
+  if (!["image", "audio", "video", "document", "sticker"].includes(kind)) return null;
+  const media = readRecord(message[kind]);
+  const providerMediaRef = readString(media?.id);
+  const mimeType = readString(media?.mime_type);
+  if (!providerMediaRef || !/^\d{3,64}$/u.test(providerMediaRef) || !mimeType) return null;
+  const sha256 = readString(media?.sha256);
+  const caption = readString(media?.caption);
+  const filename = readString(media?.filename);
+  return {
+    attachmentRef: await opaqueAttachmentRef(
+      tenantId,
+      conversationRef,
+      messageRef,
+      providerMediaRef,
+      secret
+    ),
+    kind: kind as InternalStoredAttachment["kind"],
+    mimeType: truncate(mimeType, 255),
+    ...(sha256 ? { sha256: truncate(sha256, 128) } : {}),
+    ...(caption ? { caption: truncate(caption, 4096) } : {}),
+    ...(filename ? { filename: truncate(filename, 255) } : {}),
+    state: kind === "image" ? "pending" : "unsupported",
+    providerMediaRef
+  };
 }
 
 function messageKind(value: unknown): WhatsAppMessageKind {

@@ -15,18 +15,28 @@ import {
   type InternalConversationMessage,
   type InternalConversationEnforcementState,
   type InternalConversationPolicyPatch,
+  type InternalAttachmentStateUpdate,
+  type InternalStoredAttachment,
   type InternalMessageStatusUpdate,
   type StoredConversation,
   type StoredConversationMessage,
   type WhatsAppConversationReader,
   type WhatsAppConversationEnforcementReader,
   type WhatsAppConversationWriter,
+  type WhatsAppAttachmentReader,
   type WhatsAppMessageStatus
 } from "./conversationHistory.js";
 import {
   validateConversationRetentionPolicy,
   type ConversationRetentionPolicy
 } from "./retentionPolicy.js";
+import type {
+  WhatsAppAttachmentContentReader,
+  WhatsAppAttachmentContentStore
+} from "./attachmentContent.js";
+
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
 
 type ConversationRow = {
   conversation_ref: string;
@@ -50,6 +60,16 @@ type MessageRow = {
   kind: StoredConversationMessage["kind"];
   body_text: string | null;
   template_name: string | null;
+  attachment_ref: string | null;
+  attachment_kind: InternalStoredAttachment["kind"] | null;
+  attachment_mime_type: string | null;
+  attachment_sha256: string | null;
+  attachment_caption: string | null;
+  attachment_filename: string | null;
+  attachment_size_bytes: number | null;
+  attachment_state: InternalStoredAttachment["state"] | null;
+  provider_media_ref: string | null;
+  media_storage_key: string | null;
   occurred_at: string;
   status: WhatsAppMessageStatus;
 };
@@ -91,6 +111,13 @@ export type DurableConversationObjectStub = {
   }): Promise<void>;
   ingestMessage(message: Omit<InternalConversationMessage, "tenantId">): Promise<void>;
   updateMessageStatus(update: Omit<InternalMessageStatusUpdate, "tenantId">): Promise<void>;
+  updateAttachmentState(update: Omit<InternalAttachmentStateUpdate, "tenantId">): Promise<void>;
+  getAttachment(
+    conversationRef: string,
+    attachmentRef: string
+  ): Promise<Omit<InternalStoredAttachment, "providerAccountRef"> & { providerAccountRef: string } | null>;
+  putAttachmentContent(conversationRef: string, attachmentRef: string, data: Uint8Array): Promise<void>;
+  getAttachmentContent(conversationRef: string, attachmentRef: string): Promise<Uint8Array | null>;
   updatePolicyState(patch: Omit<InternalConversationPolicyPatch, "tenantId">): Promise<void>;
   markConversationRead(conversationRef: string, readAt: string): Promise<void>;
   getConversationEnforcementState(
@@ -219,6 +246,12 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     const inactiveConversationCutoff = daysBefore(nowMs, policy.inactiveConversationRetentionDays);
     const pendingStatusCutoff = daysBefore(nowMs, policy.pendingStatusRetentionDays);
 
+    this.ctx.storage.sql.exec(
+      `DELETE FROM attachment_chunks WHERE attachment_ref IN (
+        SELECT attachment_ref FROM messages WHERE occurred_at < ? AND attachment_ref IS NOT NULL
+      )`,
+      messageCutoff
+    );
     this.ctx.storage.sql.exec("DELETE FROM messages WHERE occurred_at < ?", messageCutoff);
     const messagesDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
     this.ctx.storage.sql.exec(
@@ -276,6 +309,12 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   async deleteConversationData(conversationRef: string): Promise<ConversationDeletionResult> {
     if (!conversationRef || conversationRef.length > 200) throw new Error("Invalid conversation reference");
     this.assertInitialized();
+    this.ctx.storage.sql.exec(
+      `DELETE FROM attachment_chunks WHERE attachment_ref IN (
+        SELECT attachment_ref FROM messages WHERE conversation_ref = ? AND attachment_ref IS NOT NULL
+      )`,
+      conversationRef
+    );
     this.ctx.storage.sql.exec("DELETE FROM messages WHERE conversation_ref = ?", conversationRef);
     const messagesDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
     this.ctx.storage.sql.exec("DELETE FROM conversations WHERE conversation_ref = ?", conversationRef);
@@ -294,6 +333,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     const pendingStatusesDeleted = this.ctx.storage.sql.exec<CountRow>(
       "SELECT COUNT(*) AS count FROM pending_message_statuses"
     ).one().count;
+    this.ctx.storage.sql.exec("DELETE FROM attachment_chunks");
     this.ctx.storage.sql.exec("DELETE FROM messages");
     this.ctx.storage.sql.exec("DELETE FROM pending_message_statuses");
     this.ctx.storage.sql.exec("DELETE FROM conversations");
@@ -354,8 +394,11 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO messages (
         message_ref, conversation_ref, direction, kind, body_text,
-        template_name, occurred_at, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        template_name, occurred_at, status, attachment_ref, attachment_kind,
+        attachment_mime_type, attachment_sha256, attachment_caption,
+        attachment_filename, attachment_size_bytes, attachment_state,
+        provider_media_ref, media_storage_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       message.messageRef,
       message.conversationRef,
       message.direction,
@@ -363,7 +406,17 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       message.text ?? null,
       message.templateName ?? null,
       message.occurredAt,
-      message.status
+      message.status,
+      message.attachment?.attachmentRef ?? null,
+      message.attachment?.kind ?? null,
+      message.attachment?.mimeType ?? null,
+      message.attachment?.sha256 ?? null,
+      message.attachment?.caption ?? null,
+      message.attachment?.filename ?? null,
+      message.attachment?.sizeBytes ?? null,
+      message.attachment?.state ?? null,
+      message.attachment?.providerMediaRef ?? null,
+      message.attachment?.storageKey ?? null
     );
     const inserted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
     if (inserted !== 1) return;
@@ -450,6 +503,129 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       update.status,
       update.occurredAt
     );
+  }
+
+  async updateAttachmentState(
+    update: Omit<InternalAttachmentStateUpdate, "tenantId">
+  ): Promise<void> {
+    if (!/^att_[A-Za-z0-9_-]{32}$/u.test(update.attachmentRef)) {
+      throw new Error("Invalid attachment reference");
+    }
+    if (update.storageKey && update.storageKey.length > 512) throw new Error("Invalid media storage key");
+    if (update.sizeBytes !== undefined && (!Number.isInteger(update.sizeBytes) || update.sizeBytes < 0)) {
+      throw new Error("Invalid attachment size");
+    }
+    this.assertInitialized();
+    this.ctx.storage.sql.exec(
+      `UPDATE messages SET attachment_state = ?, media_storage_key = COALESCE(?, media_storage_key),
+        attachment_size_bytes = COALESCE(?, attachment_size_bytes)
+       WHERE conversation_ref = ? AND attachment_ref = ?`,
+      update.state,
+      update.storageKey ?? null,
+      update.sizeBytes ?? null,
+      update.conversationRef,
+      update.attachmentRef
+    );
+  }
+
+  async getAttachment(
+    conversationRef: string,
+    attachmentRef: string
+  ): Promise<InternalStoredAttachment | null> {
+    if (!conversationRef || conversationRef.length > 200 || !/^att_[A-Za-z0-9_-]{32}$/u.test(attachmentRef)) {
+      throw new Error("Invalid attachment lookup");
+    }
+    this.assertInitialized();
+    const row = this.ctx.storage.sql.exec<MessageRow & { provider_account_ref: string }>(
+      `SELECT m.message_ref, m.conversation_ref, m.direction, m.kind, m.body_text,
+        m.template_name, m.occurred_at, m.status, m.attachment_ref, m.attachment_kind,
+        m.attachment_mime_type, m.attachment_sha256, m.attachment_caption,
+        m.attachment_filename, m.attachment_size_bytes, m.attachment_state,
+        m.provider_media_ref, m.media_storage_key, c.provider_account_ref
+       FROM messages m JOIN conversations c ON c.conversation_ref = m.conversation_ref
+       WHERE m.conversation_ref = ? AND m.attachment_ref = ?`,
+      conversationRef,
+      attachmentRef
+    ).toArray()[0];
+    if (!row?.attachment_ref || !row.attachment_kind || !row.attachment_mime_type ||
+        !row.attachment_state || !row.provider_media_ref) return null;
+    return {
+      attachmentRef: row.attachment_ref,
+      conversationRef: row.conversation_ref,
+      messageRef: row.message_ref,
+      providerAccountRef: row.provider_account_ref,
+      providerMediaRef: row.provider_media_ref,
+      kind: row.attachment_kind,
+      mimeType: row.attachment_mime_type,
+      ...(row.attachment_sha256 ? { sha256: row.attachment_sha256 } : {}),
+      ...(row.attachment_caption ? { caption: row.attachment_caption } : {}),
+      ...(row.attachment_filename ? { filename: row.attachment_filename } : {}),
+      ...(row.attachment_size_bytes !== null ? { sizeBytes: row.attachment_size_bytes } : {}),
+      state: row.attachment_state,
+      ...(row.media_storage_key ? { storageKey: row.media_storage_key } : {})
+    };
+  }
+
+  async putAttachmentContent(
+    conversationRef: string,
+    attachmentRef: string,
+    data: Uint8Array
+  ): Promise<void> {
+    if (!conversationRef || conversationRef.length > 200 || !/^att_[A-Za-z0-9_-]{32}$/u.test(attachmentRef)) {
+      throw new Error("Invalid attachment content identity");
+    }
+    if (!(data instanceof Uint8Array) || data.byteLength < 1 || data.byteLength > MAX_ATTACHMENT_BYTES) {
+      throw new Error("Invalid attachment content size");
+    }
+    this.assertInitialized();
+    const exists = this.ctx.storage.sql.exec<CountRow>(
+      "SELECT COUNT(*) AS count FROM messages WHERE conversation_ref = ? AND attachment_ref = ?",
+      conversationRef,
+      attachmentRef
+    ).one().count;
+    if (exists !== 1) throw new Error("Attachment metadata was not found");
+    this.ctx.storage.sql.exec("DELETE FROM attachment_chunks WHERE attachment_ref = ?", attachmentRef);
+    for (let offset = 0, index = 0; offset < data.byteLength; offset += ATTACHMENT_CHUNK_BYTES, index += 1) {
+      const chunk = data.slice(offset, Math.min(offset + ATTACHMENT_CHUNK_BYTES, data.byteLength));
+      this.ctx.storage.sql.exec(
+        "INSERT INTO attachment_chunks (attachment_ref, chunk_index, body) VALUES (?, ?, ?)",
+        attachmentRef,
+        index,
+        chunk.buffer
+      );
+    }
+  }
+
+  async getAttachmentContent(conversationRef: string, attachmentRef: string): Promise<Uint8Array | null> {
+    if (!conversationRef || conversationRef.length > 200 || !/^att_[A-Za-z0-9_-]{32}$/u.test(attachmentRef)) {
+      throw new Error("Invalid attachment content lookup");
+    }
+    this.assertInitialized();
+    const metadata = this.ctx.storage.sql.exec<{ attachment_size_bytes: number | null }>(
+      `SELECT attachment_size_bytes FROM messages
+       WHERE conversation_ref = ? AND attachment_ref = ? AND attachment_state = 'ready'`,
+      conversationRef,
+      attachmentRef
+    ).toArray()[0];
+    if (!metadata) return null;
+    const rows = this.ctx.storage.sql.exec<{ body: ArrayBuffer | Uint8Array }>(
+      "SELECT body FROM attachment_chunks WHERE attachment_ref = ? ORDER BY chunk_index ASC",
+      attachmentRef
+    ).toArray();
+    if (rows.length === 0) return null;
+    const chunks = rows.map((row) => row.body instanceof Uint8Array ? row.body : new Uint8Array(row.body));
+    const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+    if (total < 1 || total > MAX_ATTACHMENT_BYTES ||
+        (metadata.attachment_size_bytes !== null && total !== metadata.attachment_size_bytes)) {
+      throw new Error("Stored attachment content is inconsistent");
+    }
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return result;
   }
 
   async updatePolicyState(
@@ -703,6 +879,12 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   async pruneMessages(occurredBefore: string): Promise<number> {
     parseCanonicalIso(occurredBefore, "retention cutoff");
     this.assertInitialized();
+    this.ctx.storage.sql.exec(
+      `DELETE FROM attachment_chunks WHERE attachment_ref IN (
+        SELECT attachment_ref FROM messages WHERE occurred_at < ? AND attachment_ref IS NOT NULL
+      )`,
+      occurredBefore
+    );
     this.ctx.storage.sql.exec("DELETE FROM messages WHERE occurred_at < ?", occurredBefore);
     const removed = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
     this.ctx.storage.sql.exec(
@@ -805,7 +987,10 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       : [];
     const rows = this.ctx.storage.sql.exec<MessageRow>(
       `SELECT message_ref, conversation_ref, direction, kind, body_text,
-        template_name, occurred_at, status
+        template_name, occurred_at, status, attachment_ref, attachment_kind,
+        attachment_mime_type, attachment_sha256, attachment_caption,
+        attachment_filename, attachment_size_bytes, attachment_state,
+        provider_media_ref, media_storage_key
        FROM messages WHERE conversation_ref = ? ${cursorSql}
        ORDER BY occurred_at DESC, message_ref DESC LIMIT ?`,
       query.conversationRef,
@@ -907,6 +1092,30 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       );
       INSERT INTO _sql_schema_migrations (id) VALUES (3);
     `);
+    if (currentVersion < 4) this.ctx.storage.sql.exec(`
+      ALTER TABLE messages ADD COLUMN attachment_ref TEXT;
+      ALTER TABLE messages ADD COLUMN attachment_kind TEXT;
+      ALTER TABLE messages ADD COLUMN attachment_mime_type TEXT;
+      ALTER TABLE messages ADD COLUMN attachment_sha256 TEXT;
+      ALTER TABLE messages ADD COLUMN attachment_caption TEXT;
+      ALTER TABLE messages ADD COLUMN attachment_filename TEXT;
+      ALTER TABLE messages ADD COLUMN attachment_size_bytes INTEGER;
+      ALTER TABLE messages ADD COLUMN attachment_state TEXT;
+      ALTER TABLE messages ADD COLUMN provider_media_ref TEXT;
+      ALTER TABLE messages ADD COLUMN media_storage_key TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_attachment_ref
+        ON messages(attachment_ref) WHERE attachment_ref IS NOT NULL;
+      INSERT INTO _sql_schema_migrations (id) VALUES (4);
+    `);
+    if (currentVersion < 5) this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS attachment_chunks (
+        attachment_ref TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        body BLOB NOT NULL,
+        PRIMARY KEY (attachment_ref, chunk_index)
+      );
+      INSERT INTO _sql_schema_migrations (id) VALUES (5);
+    `);
   }
 
   private assertInitialized(): void {
@@ -956,6 +1165,11 @@ export function createDurableConversationWriter(
       const { tenantId: _tenantId, ...record } = update;
       await stub.updateMessageStatus(record);
     },
+    async updateAttachmentState(update) {
+      const stub = await initializedStub(namespace, update.tenantId, retentionPolicy);
+      const { tenantId: _tenantId, ...record } = update;
+      await stub.updateAttachmentState(record);
+    },
     async updatePolicyState(patch) {
       const stub = await initializedStub(namespace, patch.tenantId, retentionPolicy);
       const { tenantId: _tenantId, ...record } = patch;
@@ -980,6 +1194,61 @@ export function createDurableConversationEnforcementReader(
       const stub = namespace.getByName(tenantId);
       await stub.initializeTenant(tenantId);
       return stub.getConversationEnforcementState(conversationRef);
+    }
+  };
+}
+
+export function createDurableAttachmentReader(
+  namespace: DurableConversationNamespace
+): WhatsAppAttachmentReader {
+  return {
+    async getAttachment(tenantId, conversationRef, attachmentRef) {
+      const stub = namespace.getByName(tenantId);
+      await stub.initializeTenant(tenantId);
+      return stub.getAttachment(conversationRef, attachmentRef);
+    }
+  };
+}
+
+export function createDurableAttachmentContentStore(
+  namespace: DurableConversationNamespace
+): WhatsAppAttachmentContentStore {
+  return {
+    async putAttachmentContent(tenantId, conversationRef, attachmentRef, data) {
+      const stub = namespace.getByName(tenantId);
+      await stub.initializeTenant(tenantId);
+      await stub.putAttachmentContent(conversationRef, attachmentRef, data);
+    }
+  };
+}
+
+export function createDurableAttachmentContentReader(
+  namespace: DurableConversationNamespace,
+  maximumBytes = MAX_ATTACHMENT_BYTES
+): WhatsAppAttachmentContentReader {
+  const metadata = createDurableAttachmentReader(namespace);
+  return {
+    async getAttachmentContent(principal, conversationRef, attachmentRef) {
+      const record = await metadata.getAttachment(principal.tenantId, conversationRef, attachmentRef);
+      if (!record || record.state !== "ready") return null;
+      const stub = namespace.getByName(principal.tenantId);
+      await stub.initializeTenant(principal.tenantId);
+      const data = await stub.getAttachmentContent(conversationRef, attachmentRef);
+      if (!data) return null;
+      if (data.byteLength > maximumBytes) throw new Error("Stored attachment exceeds the MCP response limit");
+      return {
+        attachment: {
+          attachmentRef: record.attachmentRef,
+          kind: record.kind,
+          mimeType: record.mimeType,
+          ...(record.sha256 ? { sha256: record.sha256 } : {}),
+          ...(record.caption ? { caption: record.caption } : {}),
+          ...(record.filename ? { filename: record.filename } : {}),
+          sizeBytes: data.byteLength,
+          state: record.state
+        },
+        data
+      };
     }
   };
 }
@@ -1038,6 +1307,18 @@ function mapMessage(row: MessageRow): StoredConversationMessage {
     kind: row.kind,
     ...(row.body_text ? { text: row.body_text } : {}),
     ...(row.template_name ? { templateName: row.template_name } : {}),
+    ...(row.attachment_ref && row.attachment_kind && row.attachment_mime_type && row.attachment_state ? {
+      attachment: {
+        attachmentRef: row.attachment_ref,
+        kind: row.attachment_kind,
+        mimeType: row.attachment_mime_type,
+        ...(row.attachment_sha256 ? { sha256: row.attachment_sha256 } : {}),
+        ...(row.attachment_caption ? { caption: row.attachment_caption } : {}),
+        ...(row.attachment_filename ? { filename: row.attachment_filename } : {}),
+        ...(row.attachment_size_bytes !== null ? { sizeBytes: row.attachment_size_bytes } : {}),
+        state: row.attachment_state
+      }
+    } : {}),
     occurredAt: row.occurred_at,
     status: row.status
   };
@@ -1047,6 +1328,23 @@ function validateMessage(message: Omit<InternalConversationMessage, "tenantId">)
   if (!message.messageRef || message.messageRef.length > 512) throw new Error("Invalid message reference");
   if (!message.conversationRef || message.conversationRef.length > 200) throw new Error("Invalid conversation reference");
   if (message.text && message.text.length > 4096) throw new Error("Message text exceeds storage limit");
+  if (message.attachment) {
+    if (!/^att_[A-Za-z0-9_-]{32}$/u.test(message.attachment.attachmentRef)) {
+      throw new Error("Invalid attachment reference");
+    }
+    if (!/^\d{3,64}$/u.test(message.attachment.providerMediaRef)) {
+      throw new Error("Invalid provider media reference");
+    }
+    if (!/^[a-z0-9][a-z0-9.+-]{0,126}\/[a-z0-9][a-z0-9.+-]{0,126}$/iu.test(message.attachment.mimeType)) {
+      throw new Error("Invalid attachment MIME type");
+    }
+    if (message.attachment.caption && message.attachment.caption.length > 4096) {
+      throw new Error("Attachment caption exceeds storage limit");
+    }
+    if (message.attachment.filename && message.attachment.filename.length > 255) {
+      throw new Error("Attachment filename exceeds storage limit");
+    }
+  }
   parseCanonicalIso(message.occurredAt, "message timestamp");
 }
 
