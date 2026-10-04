@@ -1,7 +1,6 @@
 import {
   type DurableConversationNamespace,
   type OutboundDispatchCompletion,
-  type OutboundDispatchReservation,
   type OutboundDispatchReservationResult
 } from "../mcp/durableConversationStore.js";
 import {
@@ -88,12 +87,21 @@ export function createMetaMessagingCapability(input: {
         conversationRef: dispatch.conversation.canonicalConversationRef,
         text: dispatch.text
       }));
-      const reservation = await reserve(input.conversations, dispatch.principal, {
+      const stub = input.conversations.getByName(dispatch.principal.tenantId);
+      await stub.initializeTenant(dispatch.principal.tenantId);
+      const previous = await stub.getOutboundDispatchResult({ idempotencyKey: dispatch.idempotencyKey, requestFingerprint: fingerprint });
+      if (previous?.status === "blocked") return reservationBlock(previous);
+      if (previous?.status === "duplicate") return { messageRef: previous.messageRef, status: previous.providerStatus };
+      const installation = await connectedInstallation(input.registry, dispatch.principal.tenantId);
+      if (!installation) return stateChanged();
+      const accessToken = await decryptPilotSecret(installation.encryptedAccessToken, input.encryptionKey);
+      const reservation = await stub.reserveOutboundDispatch({
         conversationRef: dispatch.conversation.canonicalConversationRef,
         kind: "free_form_reply",
         idempotencyKey: dispatch.idempotencyKey,
         requestFingerprint: fingerprint,
         expectedPolicyRevision: dispatch.expectedPolicyRevision,
+        expectedProviderAccountRef: installation.phoneNumberId,
         now: now().toISOString(),
         notAfter: dispatch.notAfter
       });
@@ -101,9 +109,14 @@ export function createMetaMessagingCapability(input: {
       if (reservation.status === "duplicate") {
         return { messageRef: reservation.messageRef, status: reservation.providerStatus };
       }
-      const installation = await connectedInstallation(input.registry, dispatch.principal.tenantId);
-      if (!installation || installation.phoneNumberId !== reservation.providerAccountRef) return stateChanged();
-      const accessToken = await decryptPilotSecret(installation.encryptedAccessToken, input.encryptionKey);
+      // Reservation is the policy linearization point. There is no slow preparation
+      // between it and provider initiation; policy changes after it cannot revoke
+      // an external request already being initiated. Recheck wall-clock expiry
+      // locally as the reservation RPC itself may have consumed the remaining time.
+      if (now().toISOString() >= dispatch.notAfter) {
+        await stub.cancelUnsentOutboundDispatch({ idempotencyKey: dispatch.idempotencyKey, requestFingerprint: fingerprint });
+        return reservationBlock({ status: "blocked", reason: "window_closed" });
+      }
       const result = await input.graph.sendText(
         accessToken,
         installation.phoneNumberId,
@@ -139,21 +152,28 @@ export function createMetaMessagingCapability(input: {
         templateName: dispatch.templateName,
         variables: dispatch.variables
       }));
-      const reservation = await reserve(input.conversations, dispatch.principal, {
+      const stub = input.conversations.getByName(dispatch.principal.tenantId);
+      await stub.initializeTenant(dispatch.principal.tenantId);
+      const previous = await stub.getOutboundDispatchResult({ idempotencyKey: dispatch.idempotencyKey, requestFingerprint: fingerprint });
+      if (previous?.status === "blocked") return reservationBlock(previous);
+      if (previous?.status === "duplicate") return { messageRef: previous.messageRef, status: previous.providerStatus };
+      const installation = await connectedInstallation(input.registry, dispatch.principal.tenantId);
+      if (!installation) return stateChanged();
+      const accessToken = await decryptPilotSecret(installation.encryptedAccessToken, input.encryptionKey);
+      const reservation = await stub.reserveOutboundDispatch({
         conversationRef: dispatch.conversation.canonicalConversationRef,
         kind: "approved_template",
         idempotencyKey: dispatch.idempotencyKey,
         requestFingerprint: fingerprint,
         expectedPolicyRevision: dispatch.expectedPolicyRevision,
+        expectedProviderAccountRef: installation.phoneNumberId,
+        template: { name: template.name, category: template.category, purpose: template.purpose, languageCode: template.languageCode ?? "en_US" },
         now: now().toISOString()
       });
       if (reservation.status === "blocked") return reservationBlock(reservation);
       if (reservation.status === "duplicate") {
         return { messageRef: reservation.messageRef, status: reservation.providerStatus };
       }
-      const installation = await connectedInstallation(input.registry, dispatch.principal.tenantId);
-      if (!installation || installation.phoneNumberId !== reservation.providerAccountRef) return stateChanged();
-      const accessToken = await decryptPilotSecret(installation.encryptedAccessToken, input.encryptionKey);
       const result = await input.graph.sendTemplate(
         accessToken,
         installation.phoneNumberId,
@@ -196,16 +216,6 @@ export function createDurableWhatsAppPolicyDirectory(
   };
 }
 
-async function reserve(
-  conversations: DurableConversationNamespace,
-  principal: WhatsAppMcpPrincipal,
-  reservation: OutboundDispatchReservation
-) {
-  const stub = conversations.getByName(principal.tenantId);
-  await stub.initializeTenant(principal.tenantId);
-  return stub.reserveOutboundDispatch(reservation);
-}
-
 async function complete(
   conversations: DurableConversationNamespace,
   principal: WhatsAppMcpPrincipal,
@@ -225,6 +235,10 @@ async function connectedInstallation(
 }
 
 function reservationBlock(result: Extract<OutboundDispatchReservationResult, { status: "blocked" }>): WhatsAppProtectionDecision {
+  if (result.reason === "template_unavailable") return templateUnavailable();
+  if (result.reason === "template_consent_required") {
+    return protection("WHATSAPP_TEMPLATE_CONSENT_REQUIRED", "The recipient has not consented to this template category and purpose. Nothing was sent.");
+  }
   if (result.reason === "window_closed") {
     return protection(
       "WHATSAPP_CUSTOMER_SERVICE_WINDOW_CLOSED",

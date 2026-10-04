@@ -169,7 +169,7 @@ PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- status https://<public-origin>
 The `status`, `disconnect`, and `delete` commands can use the same
 `pilot:admin:windows` wrapper on that host.
 
-Before a supervised send, verify the conversation exists, the customer-service window is open, and the reply is expected. Outside the window, enable only an exact Meta-approved template and record the recipient's category and purpose consent in the internal policy API. The MCP performs the same checks again atomically at dispatch time.
+Before a supervised send, verify the conversation exists, the customer-service window is open, and the reply is expected. Outside the window, enable only an exact Meta-approved template and record the recipient's category and purpose consent in the internal policy API. The MCP performs authoritative checks atomically when reserving dispatch, after slow preparation. The reservation is the policy linearization point, not a distributed transaction with Meta; policy changes after reservation affect subsequent sends. Free-form replies recheck expiry before invoking the provider.
 
 ## Disconnect and deletion
 

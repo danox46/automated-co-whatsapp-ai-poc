@@ -50,7 +50,7 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
   return {
     async exchangeEmbeddedSignupCode(code: string): Promise<MetaAccessToken> {
       if (!/^[A-Za-z0-9._-]{20,4096}$/u.test(code)) throw new Error("Invalid Meta authorization code");
-      const response = await boundedFetch(
+      const { response, body } = await fetchJson(
         request,
         `${base}/oauth/access_token`,
         {
@@ -64,7 +64,6 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
         },
         options.timeoutMs
       );
-      const body = await readMetaJson(response);
       const accessToken = readString(body.access_token);
       if (!response.ok || !accessToken) throw metaError(response, body, "META_CODE_EXCHANGE_FAILED");
       const expiresIn = readPositiveNumber(body.expires_in);
@@ -84,10 +83,9 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       const url = new URL(`${base}/${encodeURIComponent(wabaId)}/phone_numbers`);
       url.searchParams.set("fields", "id,display_phone_number,verified_name");
       url.searchParams.set("limit", "100");
-      const response = await boundedFetch(request, url.toString(), {
+      const { response, body } = await fetchJson(request, url.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` }
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok) throw metaError(response, body, "META_ASSET_VERIFICATION_FAILED");
       const rows = Array.isArray(body.data) ? body.data : [];
       const match = rows.find((row) => isRecord(row) && row.id === phoneNumberId);
@@ -101,11 +99,10 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
 
     async subscribeApp(accessToken: string, wabaId: string): Promise<void> {
       assertProviderId(wabaId, "WABA");
-      const response = await boundedFetch(request, `${base}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
+      const { response, body } = await fetchJson(request, `${base}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}` }
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok || body.success !== true) {
         throw metaError(response, body, "META_WEBHOOK_SUBSCRIPTION_FAILED");
       }
@@ -113,10 +110,9 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
 
     async isAppSubscribed(accessToken: string, wabaId: string): Promise<boolean> {
       assertProviderId(wabaId, "WABA");
-      const response = await boundedFetch(request, `${base}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
+      const { response, body } = await fetchJson(request, `${base}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
         headers: { Authorization: `Bearer ${accessToken}` }
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok) throw metaError(response, body, "META_WEBHOOK_SUBSCRIPTION_LOOKUP_FAILED");
       const rows = Array.isArray(body.data) ? body.data.filter(isRecord) : [];
       return rows.some((row) => {
@@ -128,11 +124,10 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
 
     async unsubscribeApp(accessToken: string, wabaId: string): Promise<void> {
       assertProviderId(wabaId, "WABA");
-      const response = await boundedFetch(request, `${base}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
+      const { response, body } = await fetchJson(request, `${base}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${accessToken}` }
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok || body.success !== true) {
         throw metaError(response, body, "META_WEBHOOK_UNSUBSCRIBE_FAILED");
       }
@@ -151,10 +146,9 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       const url = new URL(`${base}/${encodeURIComponent(wabaId)}/message_templates`);
       url.searchParams.set("name", templateName);
       url.searchParams.set("fields", "name,status,category,language");
-      const response = await boundedFetch(request, url.toString(), {
+      const { response, body } = await fetchJson(request, url.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` }
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok) throw metaError(response, body, "META_TEMPLATE_LOOKUP_FAILED");
       const templates = Array.isArray(body.data) ? body.data.filter(isRecord) : [];
       const template = templates.find((candidate) =>
@@ -177,10 +171,9 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       assertProviderId(phoneNumberId, "phone number");
       const url = new URL(`${base}/${encodeURIComponent(mediaId)}`);
       url.searchParams.set("phone_number_id", phoneNumberId);
-      const response = await boundedFetch(request, url.toString(), {
+      const { response, body } = await fetchJson(request, url.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` }
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       const mediaUrl = readString(body.url);
       const mimeType = readString(body.mime_type);
       if (!response.ok || !mediaUrl || !mimeType) {
@@ -206,32 +199,33 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       if (!Number.isInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 100 * 1024 * 1024) {
         throw new Error("Invalid media download limit");
       }
-      let currentUrl = mediaUrl;
-      for (let hop = 0; hop <= 3; hop += 1) {
-        const response = await boundedFetch(request, currentUrl, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-          redirect: "manual"
-        }, options.timeoutMs);
-        if (response.status >= 300 && response.status < 400) {
-          const location = response.headers.get("location");
-          await response.body?.cancel();
-          if (!location || hop === 3) {
-            throw new MetaGraphError("META_MEDIA_REDIRECT_INVALID", 502, false);
+      return boundedOperation(async (signal) => {
+        let currentUrl = mediaUrl;
+        for (let hop = 0; hop <= 3; hop += 1) {
+          const response = await request(currentUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            redirect: "manual",
+            signal
+          });
+          if (response.status >= 300 && response.status < 400) {
+            const location = response.headers.get("location");
+            void response.body?.cancel().catch(() => {});
+            if (!location || hop === 3) throw new MetaGraphError("META_MEDIA_REDIRECT_INVALID", 502, false);
+            const nextUrl = new URL(location, currentUrl).toString();
+            assertMetaMediaUrl(nextUrl);
+            currentUrl = nextUrl;
+            continue;
           }
-          const nextUrl = new URL(location, currentUrl).toString();
-          assertMetaMediaUrl(nextUrl);
-          currentUrl = nextUrl;
-          continue;
+          if (!response.ok) {
+            void response.body?.cancel().catch(() => {});
+            throw new MetaGraphError("META_MEDIA_DOWNLOAD_FAILED", response.status || 502, response.status === 429 || response.status >= 500);
+          }
+          const bytes = await readBoundedBytes(response, maximumBytes, signal);
+          const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+          return { bytes, ...(contentType ? { contentType } : {}) };
         }
-        if (!response.ok) {
-          await response.body?.cancel();
-          throw new MetaGraphError("META_MEDIA_DOWNLOAD_FAILED", response.status || 502, response.status === 429 || response.status >= 500);
-        }
-        const bytes = await readBoundedBytes(response, maximumBytes);
-        const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
-        return { bytes, ...(contentType ? { contentType } : {}) };
-      }
-      throw new MetaGraphError("META_MEDIA_REDIRECT_INVALID", 502, false);
+        throw new MetaGraphError("META_MEDIA_REDIRECT_INVALID", 502, false);
+      }, options.timeoutMs);
     },
 
     async listFlows(accessToken: string, wabaId: string): Promise<Array<{ id: string; name: string; status: string }>> {
@@ -239,10 +233,9 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       const url = new URL(`${base}/${encodeURIComponent(wabaId)}/flows`);
       url.searchParams.set("fields", "id,name,status");
       url.searchParams.set("limit", "100");
-      const response = await boundedFetch(request, url.toString(), {
+      const { response, body } = await fetchJson(request, url.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` }
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok) throw metaError(response, body, "META_FLOW_LOOKUP_FAILED");
       const rows = Array.isArray(body.data) ? body.data.filter(isRecord) : [];
       return rows.flatMap(row => {
@@ -256,10 +249,9 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       const form = new FormData();
       form.set("name", name);
       form.set("categories", JSON.stringify([category]));
-      const response = await boundedFetch(request, `${base}/${wabaId}/flows`, {
+      const { response, body } = await fetchJson(request, `${base}/${wabaId}/flows`, {
         method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok) throw metaError(response, body, "META_FLOW_CREATE_FAILED");
       const id = readString(body.id);
       if (!id || !/^\d{3,32}$/u.test(id)) throw new MetaGraphError("META_FLOW_CREATE_RESPONSE_INVALID", 502, false);
@@ -272,10 +264,9 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       form.set("file", new Blob([flowJson], { type: "application/json" }), "flow.json");
       form.set("name", "flow.json");
       form.set("asset_type", "FLOW_JSON");
-      const response = await boundedFetch(request, `${base}/${flowId}/assets`, {
+      const { response, body } = await fetchJson(request, `${base}/${flowId}/assets`, {
         method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok) throw metaError(response, body, "META_FLOW_UPLOAD_FAILED");
       return (Array.isArray(body.validation_errors) ? body.validation_errors : []).filter(isRecord).map(error => ({
         code: readString(error.error) ?? "META_FLOW_VALIDATION_ERROR"
@@ -284,10 +275,9 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
 
     async publishFlow(accessToken: string, flowId: string): Promise<void> {
       assertProviderId(flowId, "Flow");
-      const response = await boundedFetch(request, `${base}/${flowId}/publish`, {
+      const { response, body } = await fetchJson(request, `${base}/${flowId}/publish`, {
         method: "POST", headers: { Authorization: `Bearer ${accessToken}` }
       }, options.timeoutMs);
-      const body = await readMetaJson(response);
       if (!response.ok || body.success !== true) throw metaError(response, body, "META_FLOW_PUBLISH_FAILED");
     },
 
@@ -339,7 +329,7 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
     body: Record<string, unknown>
   ): Promise<MetaProviderResult> {
     assertProviderId(phoneNumberId, "phone number");
-    const response = await boundedFetch(request, `${base}/${encodeURIComponent(phoneNumberId)}/messages`, {
+    const { response, body: payload } = await fetchJson(request, `${base}/${encodeURIComponent(phoneNumberId)}/messages`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -347,7 +337,6 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       },
       body: JSON.stringify(body)
     }, options.timeoutMs);
-    const payload = await readMetaJson(response);
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const messageRef = isRecord(messages[0]) ? readString(messages[0].id) : null;
     if (!response.ok || !messageRef) throw metaError(response, payload, "META_MESSAGE_DISPATCH_FAILED");
@@ -355,7 +344,7 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
   }
 }
 
-async function readBoundedBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
+async function readBoundedBytes(response: Response, maximumBytes: number, signal: AbortSignal): Promise<Uint8Array> {
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > maximumBytes) {
     await response.body?.cancel();
@@ -363,25 +352,35 @@ async function readBoundedBytes(response: Response, maximumBytes: number): Promi
   }
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maximumBytes) {
-      await reader.cancel();
-      throw new MetaGraphError("META_MEDIA_TOO_LARGE", 413, false);
+  const abort = () => { void reader.cancel().catch(() => {}); };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
+  try {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      if (signal.aborted) throw new MetaGraphError("META_REQUEST_TIMEOUT", 504, true);
+      const { done, value } = await reader.read();
+      if (signal.aborted) throw new MetaGraphError("META_REQUEST_TIMEOUT", 504, true);
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel();
+        throw new MetaGraphError("META_MEDIA_TOO_LARGE", 413, false);
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return merged;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    reader.releaseLock();
   }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return merged;
 }
 
 function assertMetaMediaUrl(value: string): void {
@@ -398,16 +397,34 @@ function assertMetaMediaUrl(value: string): void {
   }
 }
 
-async function boundedFetch(
+async function fetchJson(
   request: typeof fetch,
   url: string,
   init: RequestInit,
   timeoutMs = 10_000
-): Promise<Response> {
+): Promise<{ response: Response; body: Record<string, unknown> }> {
+  return boundedOperation(async (signal) => {
+    const response = await request(url, { ...init, signal });
+    const body = await readMetaJson(response, 64 * 1024, signal);
+    return { response, body };
+  }, timeoutMs);
+}
+
+/** A single deadline covers headers, body consumption, and media redirect hops. */
+async function boundedOperation<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = 10_000
+): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new MetaGraphError("META_REQUEST_TIMEOUT", 504, true));
+    }, timeoutMs);
+  });
   try {
-    return await request(url, { ...init, signal: controller.signal });
+    return await Promise.race([operation(controller.signal), deadline]);
   } catch (error) {
     if (controller.signal.aborted) throw new MetaGraphError("META_REQUEST_TIMEOUT", 504, true);
     throw error;
@@ -416,7 +433,7 @@ async function boundedFetch(
   }
 }
 
-async function readMetaJson(response: Response, maximumBytes = 64 * 1024): Promise<Record<string, unknown>> {
+async function readMetaJson(response: Response, maximumBytes: number, signal: AbortSignal): Promise<Record<string, unknown>> {
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > maximumBytes) {
     await response.body?.cancel();
@@ -424,29 +441,39 @@ async function readMetaJson(response: Response, maximumBytes = 64 * 1024): Promi
   }
   if (!response.body) return {};
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maximumBytes) {
-      await reader.cancel();
-      throw new MetaGraphError("META_RESPONSE_TOO_LARGE", 502, true);
-    }
-    chunks.push(value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+  const abort = () => { void reader.cancel().catch(() => {}); };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
   try {
-    const value: unknown = JSON.parse(new TextDecoder().decode(merged));
-    return isRecord(value) ? value : {};
-  } catch {
-    throw new MetaGraphError("META_INVALID_RESPONSE", 502, true);
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      if (signal.aborted) throw new MetaGraphError("META_REQUEST_TIMEOUT", 504, true);
+      const { done, value } = await reader.read();
+      if (signal.aborted) throw new MetaGraphError("META_REQUEST_TIMEOUT", 504, true);
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel();
+        throw new MetaGraphError("META_RESPONSE_TOO_LARGE", 502, true);
+      }
+      chunks.push(value);
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      const value: unknown = JSON.parse(new TextDecoder().decode(merged));
+      return isRecord(value) ? value : {};
+    } catch {
+      throw new MetaGraphError("META_INVALID_RESPONSE", 502, true);
+    }
+  } finally {
+    signal.removeEventListener("abort", abort);
+    reader.releaseLock();
   }
 }
 

@@ -30,6 +30,17 @@ function contextFor(database: DatabaseSyncType): TestDurableObjectState {
   let alarm: number | null = null;
   return {
     storage: {
+      transactionSync<T>(callback: () => T): T {
+        database.exec("BEGIN");
+        try {
+          const result = callback();
+          database.exec("COMMIT");
+          return result;
+        } catch (error) {
+          database.exec("ROLLBACK");
+          throw error;
+        }
+      },
       sql: {
         exec<T>(query: string, ...bindings: SqlStorageValue[]) {
           let rows: T[] = [];
@@ -62,6 +73,61 @@ function contextFor(database: DatabaseSyncType): TestDurableObjectState {
 }
 
 describeWithSqlite("SQLite-backed conversation Durable Object", () => {
+  for (const operation of ["single", "tenant", "retention"] as const) {
+    it(`cleans consent rows atomically for ${operation} deletion under foreign-key enforcement`, async () => {
+      if (!sqliteModule) throw new Error("node:sqlite unavailable");
+      const database = new sqliteModule.DatabaseSync(":memory:");
+      database.exec("PRAGMA foreign_keys = ON");
+      const context = contextFor(database);
+      const store = new ConversationObject(context, {});
+      await store.initializeTenant("tenant-consent-cleanup");
+      await store.configureRetention({ messageRetentionDays: 90, inactiveConversationRetentionDays: 365, pendingStatusRetentionDays: 7, pruneIntervalHours: 24 }, "2026-01-01T00:00:00.000Z");
+      for (const [conversationRef, occurredAt] of [
+        ["expired", "2024-01-01T00:00:00.000Z"],
+        ["active", "2026-01-01T00:00:00.000Z"],
+        ["opted-out", "2024-01-01T00:00:00.000Z"],
+        ["paused", "2024-01-01T00:00:00.000Z"]
+      ]) {
+        await store.ingestMessage({ conversationRef, providerAccountRef: "123456789", providerParticipantRef: "15550000001", messageRef: `msg-${conversationRef}`, direction: "inbound", kind: "text", text: "fixture", occurredAt, status: "received" });
+        await store.setConversationTemplateConsent({ conversationRef, categories: ["UTILITY"], purposes: ["support"], policyRevision: "v1", updatedAt: occurredAt });
+      }
+      await store.updatePolicyState({ conversationRef: "opted-out", recipientOptedOut: true, policyRevision: "v2" });
+      await store.updatePolicyState({ conversationRef: "paused", automationPaused: true, policyRevision: "v2" });
+      if (operation === "single") {
+        await expect(store.deleteConversationData("expired")).resolves.toMatchObject({ conversationsDeleted: 1 });
+      } else if (operation === "tenant") {
+        await expect(store.deleteAllConversationData()).resolves.toMatchObject({ conversationsDeleted: 4 });
+      } else {
+        await expect(store.runRetention("2026-01-01T00:00:00.000Z")).resolves.toMatchObject({ conversationsDeleted: 1, nextRunAt: "2026-01-02T00:00:00.000Z" });
+        expect(context.scheduledAlarm()).toBe(Date.parse("2026-01-02T00:00:00.000Z"));
+      }
+      expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect((await store.getOutboundPolicy("expired")).consentedTemplatePurposes).toEqual([]);
+      if (operation !== "tenant") {
+        for (const ref of ["active", "opted-out", "paused"]) {
+          expect(await store.getConversationEnforcementState(ref)).not.toBeNull();
+          expect((await store.getOutboundPolicy(ref)).consentedTemplatePurposes).toEqual(["support"]);
+        }
+      } else {
+        expect(database.prepare("SELECT * FROM conversation_template_consents").all()).toEqual([]);
+        await expect(store.initializeTenant("other-tenant")).rejects.toThrow("Tenant identity mismatch");
+      }
+      database.close();
+    });
+  }
+  it("rolls back deletion if a later parent-table operation fails", async () => {
+    if (!sqliteModule) throw new Error("node:sqlite unavailable");
+    const database = new sqliteModule.DatabaseSync(":memory:");
+    const store = new ConversationObject(contextFor(database), {});
+    await store.initializeTenant("tenant-rollback");
+    await store.ingestMessage({ conversationRef: "rollback", providerAccountRef: "123456789", providerParticipantRef: "15550000001", messageRef: "msg-rollback", direction: "inbound", kind: "text", text: "keep", occurredAt: "2024-01-01T00:00:00.000Z", status: "received" });
+    await store.setConversationTemplateConsent({ conversationRef: "rollback", categories: ["UTILITY"], purposes: ["support"], policyRevision: "v1", updatedAt: "2024-01-01T00:00:00.000Z" });
+    database.exec("CREATE TRIGGER reject_deletion BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'fixture rejection'); END;");
+    await expect(store.deleteConversationData("rollback")).rejects.toThrow("fixture rejection");
+    expect((await store.getConversationHistory({ conversationRef: "rollback" }))?.messages).toHaveLength(1);
+    expect((await store.getOutboundPolicy("rollback")).consentedTemplatePurposes).toEqual(["support"]);
+    database.close();
+  });
   it("persists, deduplicates, paginates, and updates internal policy state", async () => {
     if (!sqliteModule) throw new Error("node:sqlite unavailable");
     const database = new sqliteModule.DatabaseSync(":memory:");
