@@ -13,17 +13,19 @@ reference secret is configured. An assisted operator can prepare a host profile
 without copying raw Meta asset IDs or credentials to the agent. Changing the
 tenant/account/phone changes that reference; token refresh does not.
 
-## Source-only Morning identity path
+## Morning identity path
 
-The optional callback is not enabled in the deployed configuration. Do not turn
-it on merely because protocol tests pass. The existing authorization session
-comes from the browser that completed Meta Embedded Signup. A client doing
-signup remotely does not give the bot host that browser cookie.
+The native callback is enabled for the assigned Morning owner demo as of
+25 October 2026. Existing ChatGPT sessions still come from the browser that
+completed Meta Embedded Signup. A client doing signup remotely does not give
+the bot host that browser cookie.
 
 The assisted hosted-pilot path now implements the existing first-party Morning
 OIDC pattern with a separate WhatsApp registration and explicit operator-to-
-installation mapping. Its real registration/configuration and intended-user
-acceptance are still pending. Confío's registration, grants and signing key
+installation mapping. Real Morning owner login, native enrollment, scoped
+history reads, protected-state restart, revocation, reconnection and SDK refresh
+have been verified on the owner demo. Another client's installation and an
+actual native-agent reply/delivery canary remain unverified. Confío's registration, grants and signing key
 are preserved; its merchant authority is not copied into WhatsApp.
 Never copy a client's cookie, browser profile, native login or keyring state to
 the operator host, and never map every signed-in visitor to the owner.
@@ -91,3 +93,10 @@ business selection, signed native MCP authorization and the new encrypted client
 inbox. These do not prove a real Morning login, client Meta signup or client intake.
 App Review, customer-assets acceptance, bot activation and publication holds
 remain separate. Existing serving code/configuration is unchanged.
+
+The Worker constructs its Morning resolver per request. Its installation
+registry and Durable Object stubs belong to that request; caching the resolver
+by environment allowed one login to succeed and the next to fail. A regression
+test now invalidates old request-owned I/O, and repeated live login starts and
+owner callbacks pass after the fix. This does not relax issuer, PKCE, nonce,
+cookie/state, assignment, encryption or MCP scope checks.
