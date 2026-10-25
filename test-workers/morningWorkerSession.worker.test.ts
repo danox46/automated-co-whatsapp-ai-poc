@@ -9,6 +9,39 @@ import { SUPPORTED_WHATSAPP_MCP_SCOPES } from '../src/mcp/auth.js';
 import { opaqueInstallationRef } from '../src/meta/installationIdentity.js';
 
 describe('Worker Morning identity routing', () => {
+  it('starts repeated logins without reusing a previous request-owned Durable Object stub', async () => {
+    const issuer = 'https://morning.fixture.test'; let requestGeneration = 0;
+    const effective = { ...env, BOT_OAUTH_REDIRECT_URI: 'http://127.0.0.1:9468/callback', MORNING_ISSUER: issuer,
+      MORNING_CLIENT_ID: 'whatsapp-internal-bot', MORNING_OPERATOR_BINDINGS: JSON.stringify([
+        { subject: `morning:oidc-${'a'.repeat(32)}`, installations: [{ tenantId: 'fixture', label: 'Fixture' }] }
+      ]), OAUTH_STATE: { getByName(name: string) {
+        const owner = requestGeneration, target = env.OAUTH_STATE.getByName(name);
+        // Cloudflare request-owned I/O must not survive its originating request.
+        // Keep real SQLite/RPC storage while making the request lifetime explicit.
+        return new Proxy(target, { get(stub, property) {
+          const member = Reflect.get(stub, property, stub);
+          return typeof member !== 'function' ? member : (...args: unknown[]) => {
+            if (owner !== requestGeneration) throw new Error('Cannot perform I/O on behalf of a different request');
+            return Reflect.apply(member, stub, args);
+          };
+        } });
+      } }
+    } as unknown as PersistentWhatsAppWorkerEnv;
+    const worker = createPersistentWhatsAppWorker({ morningRequest: async () => Response.json({ issuer,
+      authorization_endpoint: issuer + '/integrations/identity/authorize', token_endpoint: issuer + '/integrations/identity/token',
+      userinfo_endpoint: issuer + '/integrations/identity/userinfo', jwks_uri: issuer + '/integrations/identity/jwks',
+      response_types_supported: ['code'], subject_types_supported: ['public'], id_token_signing_alg_values_supported: ['RS256'],
+      token_endpoint_auth_methods_supported: ['none'], code_challenge_methods_supported: ['S256'] }) });
+    const location = 'https://pilot.test/oauth/authorize?' + new URLSearchParams({ client_id: NATIVE_WHATSAPP_BOT_CLIENT_ID,
+      redirect_uri: effective.BOT_OAUTH_REDIRECT_URI!, response_type: 'code', resource: 'https://pilot.test', scope: 'whatsapp.connection.read',
+      code_challenge_method: 'S256', code_challenge: 'a'.repeat(43), state: 'synthetic-native-request' });
+    for (let index = 0; index < 3; index++) {
+      requestGeneration++;
+      const response = await worker.fetch(new Request(location), effective);
+      expect(response.status).toBe(303);
+      expect(new URL(response.headers.get('location')!).origin).toBe(issuer);
+    }
+  });
   it('binds the native bot to the selected Morning installation even when the browser retains another Meta pilot cookie; existing clients retain their pilot path', async () => {
     const origin = 'https://pilot.test', issuer = 'https://morning.fixture.test', subject = `morning:oidc-${'a'.repeat(32)}`;
     const selected = `morning_${crypto.randomUUID().replaceAll('-', '')}`, old = `pilot_${crypto.randomUUID().replaceAll('-', '')}`;

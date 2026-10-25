@@ -103,7 +103,6 @@ export {
 export function createPersistentWhatsAppWorker(
   options: PersistentWhatsAppWorkerOptions = {}
 ) {
-  const morningSessions = new WeakMap<PersistentWhatsAppWorkerEnv, MorningOperatorSessions>();
   return {
     async fetch(request: Request, env: PersistentWhatsAppWorkerEnv): Promise<Response> {
       const retentionPolicy = conversationRetentionPolicyFromEnv(env);
@@ -179,9 +178,9 @@ export function createPersistentWhatsAppWorker(
         if (nativeClient?.clientId === env.OAUTH_CLIENT_ID) throw new Error("Native and ChatGPT OAuth registrations must remain distinct");
         let morning: MorningOperatorSessions | undefined;
         if (nativeClient && env.MORNING_ISSUER && env.MORNING_CLIENT_ID && env.MORNING_OPERATOR_BINDINGS && env.INSTALLATION_ENCRYPTION_KEY) {
-          morning = morningSessions.get(env);
-          if (!morning) {
-            morning = new MorningOperatorSessions({ origin: resource, issuer: env.MORNING_ISSUER, clientId: env.MORNING_CLIENT_ID,
+          // The resolver closes over this request's Durable Object stubs and
+          // installation registry. Never cache request-owned I/O across fetches.
+          morning = new MorningOperatorSessions({ origin: resource, issuer: env.MORNING_ISSUER, clientId: env.MORNING_CLIENT_ID,
               encryptionKey: env.INSTALLATION_ENCRYPTION_KEY, bindings: JSON.parse(env.MORNING_OPERATOR_BINDINGS), store: oauthState.morningStore,
               request: options.morningRequest,
               installationConnected: async tenantId => (await registry.getInstallation(tenantId))?.status === 'connected',
@@ -189,8 +188,6 @@ export function createPersistentWhatsAppWorker(
                 const installation = await registry.getInstallation(tenantId);
                 return installation?.status === 'connected' ? opaqueInstallationRef(tenantId, installation.wabaId, installation.phoneNumberId, env.CONVERSATION_REF_SECRET) : null;
               } });
-            morningSessions.set(env, morning);
-          }
           const loginResponse = await morning.handle(request);
           if (loginResponse) return loginResponse;
         }
