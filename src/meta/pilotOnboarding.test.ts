@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { runInNewContext } from "node:vm";
 import { createPilotOnboardingHandler, type PilotOnboardingDependencies } from "./pilotOnboarding.js";
 import { encryptPilotSecret, randomBase64Url } from "./pilotCrypto.js";
 import type { PilotInstallationRecord, PilotInviteRecord } from "./pilotInstallationStore.js";
@@ -162,7 +163,94 @@ function adminRequest(path: string, method: string, body?: unknown, token = "own
   });
 }
 
+async function signupBrowserFixture(callbackFetch: typeof fetch) {
+  const fixture = createFixture();
+  const invitationResponse = await fixture.handler.fetch(adminRequest(
+    "/admin/pilot/invitations", "POST",
+    { tenantId: "review-browser", label: "Morning review", cohortRole: "client" }
+  ));
+  const invitation = await invitationResponse?.json() as { invitationUrl: string };
+  const redirect = await fixture.handler.fetch(new Request(invitation.invitationUrl));
+  const cookie = redirect?.headers.get("set-cookie")?.split(";")[0] as string;
+  const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`, {
+    headers: { Cookie: cookie }
+  }));
+  const html = await page?.text() as string;
+  const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/u.exec(html)?.[1];
+  expect(script).toBeDefined();
+  const button = { disabled: true, hidden: false, textContent: "", addEventListener: vi.fn() };
+  const status = { textContent: "" };
+  let receive: (event: { origin: string; data: unknown }) => void = () => undefined;
+  let completeLogin: (response: unknown) => void = () => undefined;
+  const window = {
+    fbAsyncInit: () => undefined,
+    addEventListener: (_name: string, handler: typeof receive) => { receive = handler; }
+  };
+  runInNewContext(script as string, {
+    window,
+    document: {
+      getElementById: (id: string) => id === "connect" ? button : status,
+      createElement: () => ({}),
+      body: { appendChild: () => undefined }
+    },
+    FB: {
+      init: () => undefined,
+      login: (callback: typeof completeLogin) => { completeLogin = callback; }
+    },
+    fetch: callbackFetch
+  });
+  window.fbAsyncInit();
+  const click = button.addEventListener.mock.calls[0]?.[1] as () => void;
+  return {
+    button, status, click,
+    login: () => completeLogin({ authResponse: { code: "A2345678901234567890" } }),
+    finish: () => receive({ origin: "https://www.facebook.com", data: {
+      type: "WA_EMBEDDED_SIGNUP", event: "FINISH",
+      data: { waba_id: "100200300", phone_number_id: "400500600" }
+    } }),
+    cancel: () => receive({ origin: "https://www.facebook.com", data: {
+      type: "WA_EMBEDDED_SIGNUP", event: "CANCEL"
+    } })
+  };
+}
+
 describe("closed-pilot onboarding", () => {
+  it.each(["assets-first", "code-first"])("submits one callback when Meta repeats completion events (%s)", async (order) => {
+    let resolveCallback!: (response: Response) => void;
+    const callbackFetch = vi.fn<typeof fetch>(() => new Promise(resolve => { resolveCallback = resolve; }));
+    const browser = await signupBrowserFixture(callbackFetch);
+    browser.click();
+    if (order === "assets-first") browser.finish();
+    browser.login();
+    browser.finish();
+    browser.finish();
+    browser.login();
+    expect(callbackFetch).toHaveBeenCalledTimes(1);
+    browser.cancel();
+    expect(browser.status.textContent).toBe("Securing your WhatsApp connection…");
+    resolveCallback(Response.json({ ok: true, status: "connected" }));
+    await vi.waitFor(() => expect(browser.button.hidden).toBe(true));
+    browser.cancel();
+    browser.finish();
+    expect(callbackFetch).toHaveBeenCalledTimes(1);
+    expect(browser.status.textContent).toContain("WhatsApp is connected");
+  });
+
+  it("does not resubmit a consumed authorization after an uncertain callback response", async () => {
+    const callbackFetch = vi.fn<typeof fetch>().mockRejectedValue(new Error("Network unavailable"));
+    const browser = await signupBrowserFixture(callbackFetch);
+    browser.click();
+    browser.login();
+    browser.finish();
+    await vi.waitFor(() => expect(browser.status.textContent).toContain("Do not retry"));
+    expect(browser.button.disabled).toBe(true);
+    browser.finish();
+    browser.login();
+    browser.click();
+    expect(callbackFetch).toHaveBeenCalledTimes(1);
+    expect(browser.status.textContent).toContain("support");
+  });
+
   it("connects an app-owned sandbox without Embedded Signup and never exposes its secrets", async () => {
     const fixture = createFixture();
     const invitationResponse = await fixture.handler.fetch(adminRequest(

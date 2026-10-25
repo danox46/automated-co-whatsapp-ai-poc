@@ -18,6 +18,12 @@ export default defineConfig({
           INSTALLATION_ENCRYPTION_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
           PILOT_ADMIN_TOKEN: "test-pilot-admin-token",
           PUBLIC_ORIGIN: "https://pilot.test",
+          META_SANDBOX_TENANT_ID: "worker-test-sandbox",
+          META_SANDBOX_WABA_ID: "15550000000",
+          META_SANDBOX_PHONE_NUMBER_ID: "15550000002",
+          META_SANDBOX_ACCESS_TOKEN: "synthetic-worker-test-access-token",
+          META_SANDBOX_ALLOWED_RECIPIENTS: "15550000001",
+          SANDBOX_BOT_BRIDGE_TOKEN: "synthetic-worker-test-bridge-token",
           OAUTH_SIGNING_KEY_ID: "test-oauth-key",
           OAUTH_SIGNING_PRIVATE_JWK: JSON.stringify(testSigningPair.privateKey.export({ format: "jwk" })),
           OAUTH_SIGNING_PUBLIC_JWK: JSON.stringify(testSigningPair.publicKey.export({ format: "jwk" }))

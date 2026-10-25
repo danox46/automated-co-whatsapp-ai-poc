@@ -1,13 +1,13 @@
 import { DEFAULT_CONVERSATION_RETENTION_POLICY } from "./retentionPolicy.js";
 
-export const WHATSAPP_POLICY_VERSION = "2026-09-07";
+export const WHATSAPP_POLICY_VERSION = "2026-10-24";
 
 export const WHATSAPP_POLICY_URLS = {
-  overview: "https://automatedandco.danienremoto.com/mcp/whatsapp/",
-  privacy: "https://automatedandco.danienremoto.com/mcp/whatsapp/privacidad/",
-  terms: "https://automatedandco.danienremoto.com/mcp/whatsapp/terminos/",
-  deletion: "https://automatedandco.danienremoto.com/mcp/whatsapp/eliminacion-de-datos/",
-  support: "https://automatedandco.danienremoto.com/mcp/whatsapp/soporte/"
+  overview: "https://morningarp.com/products/whatsapp-bot/",
+  privacy: "https://morningarp.com/integrations/whatsapp/privacy/",
+  terms: "https://morningarp.com/integrations/whatsapp/terms/",
+  deletion: "https://morningarp.com/integrations/whatsapp/deletion/",
+  support: "https://morningarp.com/contact/"
 } as const;
 
 export const WHATSAPP_MCP_READ_TOOL_ALLOWLIST = [
