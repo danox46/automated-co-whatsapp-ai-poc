@@ -104,7 +104,9 @@ export type WhatsAppAuthorizationServerOptions = {
   };
   clients: OAuthClientRegistry;
   store: OAuthAuthorizationStore;
-  resolveSession: (request: Request) => Promise<OAuthAuthorizedSession | null>;
+  resolveSession: (request: Request) => Promise<OAuthAuthorizedSession | Response | null>;
+  /** Called only after the original client, redirect, resource, scopes and PKCE validate. */
+  onSessionRequired?: (request: Request) => Promise<Response>;
   now?: () => Date;
   authorizationCodeTtlSeconds?: number;
   accessTokenTtlSeconds?: number;
@@ -202,7 +204,9 @@ export function createWhatsAppAuthorizationServer(options: WhatsAppAuthorization
     }
 
     const session = await options.resolveSession(request);
+    if (session instanceof Response) return session;
     if (!session) {
+      if (options.onSessionRequired) return options.onSessionRequired(request);
       return oauthError("login_required", "Sign in to Automated & CO before authorizing this connection.", 401);
     }
     if (!session.subject.trim() || !session.tenantId.trim() ||

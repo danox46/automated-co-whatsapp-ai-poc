@@ -6,6 +6,7 @@ import {
   type RefreshTokenRecord
 } from "./authorizationServer.js";
 import { randomBase64Url, sha256Base64Url } from "../meta/pilotCrypto.js";
+import type { MorningLoginStore, MorningLoginRecordKind } from './morningSessions.js';
 
 type StoredAuthorizationRecord = Omit<AuthorizationCodeRecord, "approvedScopes"> & {
   approvedScopes: string[];
@@ -20,7 +21,7 @@ type PilotSessionRow = {
   expires_at: number;
 };
 
-export type OAuthStateObjectStub = OAuthAuthorizationStore & {
+export type OAuthStateObjectStub = OAuthAuthorizationStore & MorningLoginStore & {
   savePilotSession(
     sessionHash: string,
     tenantId: string,
@@ -40,6 +41,38 @@ export class WhatsAppOAuthStateDurableObject extends DurableObject {
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => this.migrate());
+  }
+
+  async putMorningLogin(kind: MorningLoginRecordKind, hash: string, encrypted: string, expiresAt: number, nowSeconds: number): Promise<boolean> {
+    validateHash(hash);
+    if (!['flow', 'session'].includes(kind) || encrypted.length > 65536 || !Number.isInteger(nowSeconds) || !Number.isInteger(expiresAt)) return false;
+    this.ctx.storage.sql.exec('DELETE FROM morning_login_records WHERE expires_at <= ?', nowSeconds);
+    if (kind === 'session' && expiresAt === 0) {
+      const changed = this.ctx.storage.sql.exec<{ record_hash: string }>('UPDATE morning_login_records SET encrypted_json = ? WHERE kind = ? AND record_hash = ? AND expires_at > ? RETURNING record_hash', encrypted, kind, hash, nowSeconds).toArray();
+      return changed.length === 1;
+    }
+    if (expiresAt <= nowSeconds || expiresAt > nowSeconds + (kind === 'flow' ? 300 : 3600)) return false;
+    const count = this.ctx.storage.sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM morning_login_records WHERE kind = ?', kind).toArray()[0].n;
+    if (count >= (kind === 'flow' ? 100 : 1000)) return false;
+    this.ctx.storage.sql.exec('INSERT INTO morning_login_records (kind, record_hash, encrypted_json, expires_at) VALUES (?, ?, ?, ?)', kind, hash, encrypted, expiresAt);
+    return true;
+  }
+
+  async getMorningLogin(kind: MorningLoginRecordKind, hash: string, nowSeconds: number): Promise<string | null> {
+    validateHash(hash);
+    const row = this.ctx.storage.sql.exec<{ encrypted_json: string }>('SELECT encrypted_json FROM morning_login_records WHERE kind = ? AND record_hash = ? AND expires_at > ?', kind, hash, nowSeconds).toArray()[0];
+    return row?.encrypted_json ?? null;
+  }
+
+  async consumeMorningLoginFlow(hash: string, nowSeconds: number): Promise<string | null> {
+    validateHash(hash);
+    const rows = this.ctx.storage.sql.exec<{ encrypted_json: string }>("DELETE FROM morning_login_records WHERE kind = 'flow' AND record_hash = ? AND expires_at > ? RETURNING encrypted_json", hash, nowSeconds).toArray();
+    return rows[0]?.encrypted_json ?? null;
+  }
+
+  async deleteMorningLoginSession(hash: string): Promise<void> {
+    validateHash(hash);
+    this.ctx.storage.sql.exec("DELETE FROM morning_login_records WHERE kind = 'session' AND record_hash = ?", hash);
   }
 
   async saveAuthorizationCode(record: AuthorizationCodeRecord): Promise<void> {
@@ -194,6 +227,10 @@ export class WhatsAppOAuthStateDurableObject extends DurableObject {
         tenant_id TEXT PRIMARY KEY,
         revoked_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS morning_login_records (
+        kind TEXT NOT NULL, record_hash TEXT NOT NULL, encrypted_json TEXT NOT NULL, expires_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, record_hash)
+      );
       CREATE INDEX IF NOT EXISTS authorization_codes_tenant_idx ON authorization_codes(tenant_id);
       CREATE INDEX IF NOT EXISTS refresh_tokens_tenant_idx ON refresh_tokens(tenant_id);
       CREATE INDEX IF NOT EXISTS pilot_sessions_tenant_idx ON pilot_sessions(tenant_id);
@@ -205,6 +242,7 @@ export function createDurableOAuthState(namespace: OAuthStateNamespace) {
   const stub = namespace.getByName("oauth:global");
   return {
     store: stub as OAuthAuthorizationStore,
+    morningStore: stub as MorningLoginStore,
     async createPilotSession(tenantId: string, approvedScopes: readonly string[], ttlSeconds = 30 * 24 * 60 * 60) {
       const rawSession = randomBase64Url(32);
       const sessionHash = await sha256Base64Url(rawSession);

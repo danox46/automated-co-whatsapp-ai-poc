@@ -50,7 +50,8 @@ import { createSandboxFlowAdmin } from "../meta/sandboxFlowAdmin.js";
 import { createSandboxFlowMessaging } from "../meta/sandboxFlowMessaging.js";
 import { opaqueConversationRef } from "../meta/conversationEvents.js";
 import { opaqueInstallationRef } from "../meta/installationIdentity.js";
-import { nativeBotOAuthClient } from "../oauth/nativeBotClient.js";
+import { nativeBotOAuthClient, NATIVE_WHATSAPP_BOT_CLIENT_ID } from "../oauth/nativeBotClient.js";
+import { MorningOperatorSessions } from '../oauth/morningSessions.js';
 import {
   readWhatsAppSandboxConfig,
   sandboxRecipientAllowed,
@@ -79,6 +80,9 @@ export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & WhatsAppSandboxEnv & 
   OAUTH_CLIENT_ID?: string;
   OAUTH_REDIRECT_URI?: string;
   BOT_OAUTH_REDIRECT_URI?: string;
+  MORNING_ISSUER?: string;
+  MORNING_CLIENT_ID?: string;
+  MORNING_OPERATOR_BINDINGS?: string;
   CONVERSATION_MESSAGE_RETENTION_DAYS?: string;
   CONVERSATION_INACTIVE_RETENTION_DAYS?: string;
   CONVERSATION_PENDING_STATUS_RETENTION_DAYS?: string;
@@ -88,7 +92,7 @@ export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & WhatsAppSandboxEnv & 
 export type PersistentWhatsAppWorkerOptions = Pick<
   CreateWhatsAppMcpHandlerOptions,
   "verifyToken" | "messaging"
->;
+> & { morningRequest?: NonNullable<ConstructorParameters<typeof MorningOperatorSessions>[0]['request']> };
 
 export {
   WhatsAppConversationDurableObject,
@@ -99,6 +103,7 @@ export {
 export function createPersistentWhatsAppWorker(
   options: PersistentWhatsAppWorkerOptions = {}
 ) {
+  const morningSessions = new WeakMap<PersistentWhatsAppWorkerEnv, MorningOperatorSessions>();
   return {
     async fetch(request: Request, env: PersistentWhatsAppWorkerEnv): Promise<Response> {
       const retentionPolicy = conversationRetentionPolicyFromEnv(env);
@@ -172,6 +177,19 @@ export function createPersistentWhatsAppWorker(
         const signingKey = parseSigningKey(env);
         const nativeClient = nativeBotOAuthClient(env.BOT_OAUTH_REDIRECT_URI);
         if (nativeClient?.clientId === env.OAUTH_CLIENT_ID) throw new Error("Native and ChatGPT OAuth registrations must remain distinct");
+        let morning: MorningOperatorSessions | undefined;
+        if (nativeClient && env.MORNING_ISSUER && env.MORNING_CLIENT_ID && env.MORNING_OPERATOR_BINDINGS && env.INSTALLATION_ENCRYPTION_KEY) {
+          morning = morningSessions.get(env);
+          if (!morning) {
+            morning = new MorningOperatorSessions({ origin: resource, issuer: env.MORNING_ISSUER, clientId: env.MORNING_CLIENT_ID,
+              encryptionKey: env.INSTALLATION_ENCRYPTION_KEY, bindings: JSON.parse(env.MORNING_OPERATOR_BINDINGS), store: oauthState.morningStore,
+              request: options.morningRequest,
+              installationConnected: async tenantId => (await registry.getInstallation(tenantId))?.status === 'connected' });
+            morningSessions.set(env, morning);
+          }
+          const loginResponse = await morning.handle(request);
+          if (loginResponse) return loginResponse;
+        }
         const authorizationServer = createWhatsAppAuthorizationServer({
           issuer: resource,
           resource,
@@ -182,9 +200,12 @@ export function createPersistentWhatsAppWorker(
           }, ...(nativeClient ? [nativeClient] : [])]),
           store: oauthState.store,
           resolveSession: async (authorizationRequest) => {
+            if (morning && new URL(authorizationRequest.url).searchParams.get('client_id') === NATIVE_WHATSAPP_BOT_CLIENT_ID) return morning.resolve(authorizationRequest);
             const rawSession = readCookie(authorizationRequest, PILOT_SESSION_COOKIE);
             return rawSession ? oauthState.resolvePilotSession(rawSession) : null;
           },
+          onSessionRequired: morning ? async authorizationRequest => new URL(authorizationRequest.url).searchParams.get('client_id') === NATIVE_WHATSAPP_BOT_CLIENT_ID
+            ? morning!.start(authorizationRequest) : Response.json({ error: 'login_required', error_description: 'Sign in through the existing WhatsApp connection before authorizing this client.' }, { status: 401, headers: { 'Cache-Control': 'no-store' } }) : undefined,
           clientIdMetadataDocumentSupported: true
         });
         const authorizationResponse = await authorizationServer.fetch(request);

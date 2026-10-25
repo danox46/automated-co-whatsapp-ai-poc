@@ -16,6 +16,15 @@ const now = new Date("2026-09-05T18:00:00.000Z");
 const verifier = "local-verifier-with-more-than-forty-three-characters-123456789";
 
 describe("WhatsApp OAuth 2.1 authorization server", () => {
+  it('starts a configured sign-in only after validating the original OAuth request and preserves explicit session errors', async () => {
+    let starts = 0;
+    const { server } = await fixture(null, async () => { starts++; return new Response(null, { status: 303, headers: { Location: 'https://morning.fixture.test/integrations/identity/authorize' } }); });
+    const wrong = new URL((await authorizationRequest()).url); wrong.searchParams.set('redirect_uri', 'https://foreign.test/callback');
+    expect((await server.fetch(new Request(wrong)))?.status).toBe(400); expect(starts).toBe(0);
+    expect((await server.fetch(await authorizationRequest()))?.status).toBe(303); expect(starts).toBe(1);
+    const unavailable = await fixture(new Response('Sign-in unavailable', { status: 503 }), async () => { starts++; return new Response(); });
+    expect((await unavailable.server.fetch(await authorizationRequest()))?.status).toBe(503); expect(starts).toBe(1);
+  });
   it("publishes OAuth, OpenID, and public signing-key discovery", async () => {
     const { server } = await fixture();
     const metadata = await server.fetch(new Request(`${issuer}/.well-known/oauth-authorization-server`));
@@ -151,7 +160,7 @@ describe("WhatsApp OAuth 2.1 authorization server", () => {
   });
 });
 
-async function fixture(session: OAuthAuthorizedSession | null = approvedSession()) {
+async function fixture(session: OAuthAuthorizedSession | Response | null = approvedSession(), onSessionRequired?: (request: Request) => Promise<Response>) {
   const pair = await crypto.subtle.generateKey(
     {
       name: "RSASSA-PKCS1-v1_5",
@@ -171,6 +180,7 @@ async function fixture(session: OAuthAuthorizedSession | null = approvedSession(
     clients: createStaticOAuthClientRegistry([{ clientId, redirectUris: [redirectUri] }]),
     store: new InMemoryOAuthAuthorizationStore(),
     resolveSession: async () => session,
+    onSessionRequired,
     now: () => now
   });
   return { server };
