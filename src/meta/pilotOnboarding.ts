@@ -1,5 +1,6 @@
 import { createMetaGraphClient, MetaGraphError } from "./graphClient.js";
 import { createPilotInstallationRegistry } from "./pilotInstallationStore.js";
+import { pilotAccountProfileCommandSchema } from "./pilotAccountProfile.js";
 import {
   decryptPilotSecret,
   encryptPilotSecret,
@@ -76,6 +77,8 @@ export function createPilotOnboardingHandler(
       if (url.pathname === "/admin/pilot/sandbox/invitations/rotate" && request.method === "POST") {
         return createSandboxInvitation(request, true);
       }
+      const profileMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})\/account-profile$/u.exec(url.pathname);
+      if (profileMatch) return accountProfile(request, profileMatch[1]);
       const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect|reconcile-disconnect|provider-status|refresh-sandbox-credential))?$/u.exec(url.pathname);
       if (installationMatch && request.method === "GET" && !installationMatch[2]) {
         return getInstallation(request, installationMatch[1]);
@@ -388,6 +391,25 @@ export function createPilotOnboardingHandler(
     return Response.json({ ok: true, installation: dependencies.registry.sanitize(installation) }, {
       headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
     });
+  }
+
+  async function accountProfile(request: Request, tenantId: string): Promise<Response> {
+    if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
+    if (request.method === "GET") {
+      const result = await dependencies.registry.getAccountProfile(tenantId);
+      if (!result) return jsonError("PILOT_INSTALLATION_NOT_FOUND", "No installation exists for this pilot tenant.", 404);
+      return Response.json({ ok: true, ...result }, { headers: securityHeaders() });
+    }
+    if (request.method !== "PUT") return jsonError("PILOT_METHOD_NOT_ALLOWED", "Use GET or PUT.", 405);
+    const parsed = pilotAccountProfileCommandSchema.safeParse(await readBoundedJson(request));
+    if (!parsed.success || Object.values(parsed.data.profile).some(observation =>
+      typeof observation === "object" && "evidence" in observation && observation.evidence.observedAt > now().toISOString())) {
+      return jsonError("PILOT_ACCOUNT_PROFILE_INVALID", "Provide a bounded model, evidence, original intent key and expected revision.", 400);
+    }
+    const result = await dependencies.registry.putAccountProfile(tenantId, parsed.data, now());
+    if (!result.ok) return jsonError(`PILOT_ACCOUNT_PROFILE_${result.code}`,
+      "Profile was not changed. Read the current revision and reconcile the original intent.", result.code === "INSTALLATION_REQUIRED" ? 404 : 409);
+    return Response.json(result, { headers: securityHeaders() });
   }
 
   async function getProviderStatus(request: Request, tenantId: string): Promise<Response> {

@@ -1,5 +1,7 @@
 import { DurableObject, type DurableObjectState } from "cloudflare:workers";
 import { randomBase64Url, sha256Base64Url } from "./pilotCrypto.js";
+import { pilotAccountProfileCommandSchema, describePilotAccountProfile,
+  type PilotAccountProfileCommand, type PilotAccountProfileResult, type StoredPilotAccountProfile } from "./pilotAccountProfile.js";
 
 export type PilotInviteRecord = {
   tenantId: string;
@@ -79,6 +81,9 @@ export type PilotInstallationObjectStub = {
   getInstallation(): Promise<PilotInstallationRecord | null>;
   markInstallationDisconnected(disconnectedAt: string): Promise<void>;
   deleteInstallation(): Promise<void>;
+  getAccountProfile(): Promise<StoredPilotAccountProfile | null>;
+  getAccountProfileView(): Promise<ReturnType<typeof describePilotAccountProfile> | null>;
+  putAccountProfile(command: PilotAccountProfileCommand, now: string): Promise<PilotAccountProfileResult>;
   putWabaRoute(tenantId: string): Promise<void>;
   getWabaRoute(): Promise<string | null>;
   deleteWabaRoute(): Promise<void>;
@@ -218,6 +223,58 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
 
   async deleteInstallation(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM installation");
+    this.ctx.storage.sql.exec("DELETE FROM account_profile");
+    this.ctx.storage.sql.exec("DELETE FROM account_profile_commands");
+  }
+
+  async getAccountProfile(): Promise<StoredPilotAccountProfile | null> {
+    const row = this.ctx.storage.sql.exec<{ snapshot: string }>("SELECT snapshot FROM account_profile LIMIT 1").toArray()[0];
+    return row ? JSON.parse(row.snapshot) as StoredPilotAccountProfile : null;
+  }
+
+  async getAccountProfileView(): Promise<ReturnType<typeof describePilotAccountProfile> | null> {
+    // Read both rows within one synchronous object turn, including during an asset refresh.
+    const installation = this.ctx.storage.sql.exec<InstallationRow>("SELECT * FROM installation LIMIT 1").toArray()[0];
+    if (!installation) return null;
+    const row = this.ctx.storage.sql.exec<{ snapshot: string }>("SELECT snapshot FROM account_profile LIMIT 1").toArray()[0];
+    return describePilotAccountProfile(row ? JSON.parse(row.snapshot) as StoredPilotAccountProfile : null, {
+      wabaId: installation.waba_id, phoneNumberId: installation.phone_number_id, status: installation.status
+    });
+  }
+
+  async putAccountProfile(input: PilotAccountProfileCommand, now: string): Promise<PilotAccountProfileResult> {
+    const command = pilotAccountProfileCommandSchema.parse(input);
+    assertCanonicalIso(now);
+    for (const observation of Object.values(command.profile)) {
+      if (typeof observation === "object" && "evidence" in observation && observation.evidence.observedAt > now) {
+        throw new Error("Profile evidence cannot be future-dated");
+      }
+    }
+    // No await between read/compare/write: one object owns the profile and its receipts.
+    return this.ctx.storage.transactionSync(() => {
+      const currentRow = this.ctx.storage.sql.exec<{ snapshot: string }>("SELECT snapshot FROM account_profile LIMIT 1").toArray()[0];
+      const current = currentRow ? JSON.parse(currentRow.snapshot) as StoredPilotAccountProfile : null;
+      const revision = current?.revision ?? 0;
+      const installation = this.ctx.storage.sql.exec<InstallationRow>("SELECT * FROM installation LIMIT 1").toArray()[0];
+      if (!installation) return { ok: false, code: "INSTALLATION_REQUIRED", revision } as const;
+      const request = JSON.stringify(command);
+      const prior = this.ctx.storage.sql.exec<{ request: string; revision: number }>(
+        "SELECT request, revision FROM account_profile_commands WHERE intent_key = ?", command.intentKey
+      ).toArray()[0];
+      if (prior) return prior.request === request
+        ? { ok: true, revision: prior.revision, replayed: true } as const
+        : { ok: false, code: "INTENT_CONFLICT", revision } as const;
+      if (command.expectedRevision !== revision) return { ok: false, code: "REVISION_CONFLICT", revision } as const;
+      const snapshot: StoredPilotAccountProfile = {
+        revision: revision + 1, profile: command.profile,
+        wabaId: installation.waba_id, phoneNumberId: installation.phone_number_id, updatedAt: now
+      };
+      this.ctx.storage.sql.exec("DELETE FROM account_profile");
+      this.ctx.storage.sql.exec("INSERT INTO account_profile (snapshot) VALUES (?)", JSON.stringify(snapshot));
+      this.ctx.storage.sql.exec("INSERT INTO account_profile_commands (intent_key, request, revision) VALUES (?, ?, ?)",
+        command.intentKey, request, snapshot.revision);
+      return { ok: true, revision: snapshot.revision, replayed: false } as const;
+    });
   }
 
   async putWabaRoute(tenantId: string): Promise<void> {
@@ -353,6 +410,10 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
         status TEXT NOT NULL CHECK(status IN ('connected', 'disconnected'))
       );
       CREATE TABLE IF NOT EXISTS waba_route (tenant_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS account_profile (snapshot TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS account_profile_commands (
+        intent_key TEXT PRIMARY KEY, request TEXT NOT NULL, revision INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS cohort_seats (
         tenant_id TEXT PRIMARY KEY,
         role TEXT NOT NULL CHECK(role IN ('internal', 'client')),
@@ -496,6 +557,16 @@ export function createPilotInstallationRegistry(
     async getInstallation(tenantId: string): Promise<PilotInstallationRecord | null> {
       validateTenantId(tenantId);
       return namespace.getByName(`tenant:${tenantId}`).getInstallation();
+    },
+
+    async getAccountProfile(tenantId: string) {
+      validateTenantId(tenantId);
+      return namespace.getByName(`tenant:${tenantId}`).getAccountProfileView();
+    },
+
+    async putAccountProfile(tenantId: string, command: PilotAccountProfileCommand, now = new Date()) {
+      validateTenantId(tenantId);
+      return namespace.getByName(`tenant:${tenantId}`).putAccountProfile(command, now.toISOString());
     },
 
     async reclaimUninstalledPilotSeats(

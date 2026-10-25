@@ -55,6 +55,8 @@ function createFixture() {
     async getInstallation(tenantId) {
       return structuredClone(installations.get(tenantId) ?? null);
     },
+    async getAccountProfile() { return null; },
+    async putAccountProfile() { return { ok: false, code: "INSTALLATION_REQUIRED", revision: 0 }; },
     async reclaimUninstalledPilotSeats() {
       const released = orphanedConnectedSeats;
       orphanedConnectedSeats = 0;

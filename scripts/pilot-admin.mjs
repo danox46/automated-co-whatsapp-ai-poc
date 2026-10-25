@@ -7,7 +7,7 @@ const [command, baseUrl, ...argumentsAfterOrigin] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
 if (!adminToken || !command || !baseUrl) {
-  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|status|provider-status|conversations|history|dispatches|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
+  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|status|provider-status|account-profile|set-account-profile|conversations|history|dispatches|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
 }
 
 const origin = new URL(baseUrl).origin;
@@ -70,6 +70,18 @@ if (command === "sandbox-connect") {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({ tenantId, label, cohortRole, expiresInHours: 24 })
+  });
+} else if (command === "account-profile" || command === "set-account-profile") {
+  const [tenantId, path] = argumentsAfterOrigin;
+  if (!tenantId || (command === "set-account-profile" && !path) || argumentsAfterOrigin.length > (command === "account-profile" ? 1 : 2)) {
+    fail(`${command} requires a tenant ID${command === "set-account-profile" ? " and local command JSON path" : ""}.`);
+  }
+  const body = command === "set-account-profile"
+    ? await (await import("node:fs/promises")).readFile(path, "utf8") : undefined;
+  response = await fetch(`${origin}/admin/pilot/installations/${encodeURIComponent(tenantId)}/account-profile`, {
+    method: body === undefined ? "GET" : "PUT",
+    headers: body === undefined ? headers : { ...headers, "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body })
   });
 } else if (command === "status") {
   const tenantId = argumentsAfterOrigin[0];
