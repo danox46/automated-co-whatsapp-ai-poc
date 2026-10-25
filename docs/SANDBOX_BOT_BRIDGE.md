@@ -50,6 +50,12 @@ readback. Compare it in-process with the protected local reference to detect a
 stale installation credential. It returns neither the token nor encrypted
 credential data; ordinary status and connected-agent tools do not expose it.
 
+Outbound text, templates and draft Flows explicitly select the connected
+installation's Messaging Account with Meta's `paid_messaging_account_id` field.
+The server supplies it from the verified tenant installation; agents cannot
+choose a billing account. This pins the intended account under Meta's new
+account model; it does not establish funding or partner credit eligibility.
+
 Only a structured numeric Graph error on a definitive 4xx response (excluding
 408/429) records `provider_rejected` with its code/status on the original
 reservation. Text, template and draft sends replay that refusal without another

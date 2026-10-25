@@ -6,6 +6,24 @@ function json(value: unknown, status = 200): Response {
 }
 
 describe("Meta Graph client", () => {
+  it("explicitly selects the verified messaging account for text, template and draft sends", async () => {
+    const request = vi.fn<typeof fetch>().mockImplementation(async () => json({ messages: [{ id: "fixture-explicit-billing" }] }));
+    const client = createMetaGraphClient({ appId: "app", appSecret: "secret", graphVersion: "v25.0", fetch: request });
+    await client.sendText("fixture-token", "15550000002", "15550000001", "Hi", "987654321");
+    await client.sendTemplate("fixture-token", "15550000002", "15550000001", "status_update", "en_US", [], "987654321");
+    await client.sendDraftFlow("fixture-token", "15550000002", "15550000001", { flowId: "111111", screen: "VISIT_SCHEDULE", token: `flow_${"a".repeat(43)}`, text: "Synthetic form", cta: "Open test", paidMessagingAccountId: "987654321" });
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(request.mock.calls.map(([, init]) => JSON.parse(init!.body as string).paid_messaging_account_id)).toEqual(["987654321", "987654321", "987654321"]);
+    expect(request.mock.calls.map(([url]) => String(url))).toEqual(Array(3).fill("https://graph.facebook.com/v25.0/15550000002/messages"));
+  });
+
+  it("rejects invalid messaging-account selectors before contacting Meta", async () => {
+    const request = vi.fn<typeof fetch>();
+    const client = createMetaGraphClient({ appId: "app", appSecret: "secret", graphVersion: "v25.0", fetch: request });
+    await expect(client.sendText("fixture-token", "15550000002", "15550000001", "Hi", "other-account")).rejects.toThrow("messaging account");
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("sends a draft interactive Flow with a bounded server-owned envelope and never publishes it", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(json({ messages: [{ id: "fixture-flow-result" }] }));
     const client = createMetaGraphClient({ appId: "app", appSecret: "secret", graphVersion: "v25.0", fetch: request });

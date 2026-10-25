@@ -120,7 +120,7 @@ export function createMetaMessagingCapability(input: {
       }
       let result;
       try {
-        result = await input.graph.sendText(accessToken, installation.phoneNumberId, reservation.providerParticipantRef, dispatch.text);
+        result = await input.graph.sendText(accessToken, installation.phoneNumberId, reservation.providerParticipantRef, dispatch.text, installation.wabaId);
       } catch (error) {
         const rejection = await recordDefiniteProviderRejection(stub, { idempotencyKey: dispatch.idempotencyKey, requestFingerprint: fingerprint }, error, now().toISOString());
         if (rejection) return rejection;
@@ -180,7 +180,7 @@ export function createMetaMessagingCapability(input: {
       let result;
       try {
         result = await input.graph.sendTemplate(accessToken, installation.phoneNumberId, reservation.providerParticipantRef,
-          dispatch.templateName, template.languageCode ?? "en_US", dispatch.variables);
+          dispatch.templateName, template.languageCode ?? "en_US", dispatch.variables, installation.wabaId);
       } catch (error) {
         const rejection = await recordDefiniteProviderRejection(stub, { idempotencyKey: dispatch.idempotencyKey, requestFingerprint: fingerprint }, error, now().toISOString());
         if (rejection) return rejection;

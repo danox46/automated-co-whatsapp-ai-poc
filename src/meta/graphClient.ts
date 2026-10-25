@@ -283,7 +283,7 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
     },
 
     async sendDraftFlow(accessToken: string, phoneNumberId: string, recipient: string, input: {
-      flowId: string; screen: string; token: string; text: string; cta: string;
+      flowId: string; screen: string; token: string; text: string; cta: string; paidMessagingAccountId?: string;
     }): Promise<MetaProviderResult> {
       assertProviderId(input.flowId, "Flow");
       if (!/^[A-Z][A-Z0-9_]{0,79}$/u.test(input.screen) || !/^flow_[A-Za-z0-9_-]{43}$/u.test(input.token) ||
@@ -296,14 +296,15 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
           flow_message_version: "3", flow_id: input.flowId, flow_cta: input.cta,
           mode: "draft", flow_token: input.token, flow_action: "navigate", flow_action_payload: { screen: input.screen }
         } } }
-      });
+      }, input.paidMessagingAccountId);
     },
 
     async sendText(
       accessToken: string,
       phoneNumberId: string,
       recipient: string,
-      text: string
+      text: string,
+      paidMessagingAccountId?: string
     ): Promise<MetaProviderResult> {
       return sendMessage(accessToken, phoneNumberId, {
         messaging_product: "whatsapp",
@@ -311,7 +312,7 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
         to: recipient,
         type: "text",
         text: { body: text, preview_url: false }
-      });
+      }, paidMessagingAccountId);
     },
 
     async sendTemplate(
@@ -320,7 +321,8 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       recipient: string,
       templateName: string,
       languageCode: string,
-      variables: readonly string[]
+      variables: readonly string[],
+      paidMessagingAccountId?: string
     ): Promise<MetaProviderResult> {
       return sendMessage(accessToken, phoneNumberId, {
         messaging_product: "whatsapp",
@@ -337,23 +339,25 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
             }]
           } : {})
         }
-      });
+      }, paidMessagingAccountId);
     }
   };
 
   async function sendMessage(
     accessToken: string,
     phoneNumberId: string,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
+    paidMessagingAccountId?: string
   ): Promise<MetaProviderResult> {
     assertProviderId(phoneNumberId, "phone number");
+    if (paidMessagingAccountId !== undefined) assertProviderId(paidMessagingAccountId, "messaging account");
     const { response, body: payload } = await fetchJson(request, `${base}/${encodeURIComponent(phoneNumberId)}/messages`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify({ ...body, ...(paidMessagingAccountId ? { paid_messaging_account_id: paidMessagingAccountId } : {}) })
     }, options.timeoutMs);
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const messageRef = isRecord(messages[0]) ? readString(messages[0].id) : null;

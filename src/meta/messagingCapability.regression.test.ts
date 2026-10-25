@@ -88,6 +88,14 @@ async function fixture() {
 }
 
 describeWithSqlite("authoritative outbound dispatch regressions", () => {
+  it("takes the billing account only from the authenticated tenant installation", async () => {
+    const f = await fixture();
+    await expect(f.send("reply", "reply-billing-binding")).resolves.toMatchObject({ ok: true });
+    await expect(f.send("template", "template-billing-binding")).resolves.toMatchObject({ ok: true });
+    expect(f.sendText).toHaveBeenCalledWith("fixture-token", "123456789", "15550000001", "Hi", "987654321");
+    expect(f.sendTemplate).toHaveBeenCalledWith("fixture-token", "123456789", "15550000001", "status_update", "en_US", ["Hi"], "987654321");
+  });
+
   it("migrates a version-six original unknown reservation without reclassifying or deleting it", async () => {
     const f = await fixture();
     f.sendText.mockRejectedValue(new Error("Original response lost"));

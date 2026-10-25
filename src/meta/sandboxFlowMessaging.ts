@@ -87,7 +87,7 @@ export function createSandboxFlowMessaging(input: {
       return failure("WHATSAPP_CUSTOMER_SERVICE_WINDOW_CLOSED", "The 24-hour window closed before dispatch. No provider send was initiated.");
     }
     try {
-      const result = await input.graph.sendDraftFlow(accessToken, reservation.providerAccountRef, reservation.providerParticipantRef, { flowId, screen: form.screen, token, text, cta: form.cta });
+      const result = await input.graph.sendDraftFlow(accessToken, reservation.providerAccountRef, reservation.providerParticipantRef, { flowId, screen: form.screen, token, text, cta: form.cta, paidMessagingAccountId: installation.wabaId });
       await stub.completeOutboundDispatch({ idempotencyKey: args.idempotencyKey, requestFingerprint: fingerprint, conversationRef: args.conversationRef,
         providerAccountRef: reservation.providerAccountRef, providerParticipantRef: reservation.providerParticipantRef, messageRef: result.messageRef,
         providerStatus: result.status, kind: "interactive", text, occurredAt: now().toISOString() });
