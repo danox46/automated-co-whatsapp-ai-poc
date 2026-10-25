@@ -35,7 +35,7 @@
     "dotenv": "^16.4.7",
     "express": "^5.2.1",
     "openid-client": "6.8.8",
-    "zod": "^4.2.0"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.5",

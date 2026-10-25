@@ -32,6 +32,9 @@ export default defineConfig({
     })
   ],
   test: {
+    // Workerd cold startup and real serial RPCs exceed Vitest's 5s default on
+    // Windows. This bounds the harness; it is not a production latency claim.
+    testTimeout: 20000,
     include: ["test-workers/**/*.test.ts"]
   }
 });
