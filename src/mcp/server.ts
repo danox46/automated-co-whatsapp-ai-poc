@@ -150,6 +150,7 @@ export type WhatsAppConnectionStatus = {
   connected: boolean;
   appMode: "not-created" | "development" | "live";
   writeToolsRegistered: boolean;
+  installationRef?: string;
 };
 
 export type CreateWhatsAppMcpHandlerOptions = {
@@ -184,7 +185,8 @@ const connectionStatusOutputSchema = z.object({
   environment: z.enum(["not-configured", "development", "production"]),
   connected: z.boolean(),
   appMode: z.enum(["not-created", "development", "live"]),
-  writeToolsRegistered: z.boolean()
+  writeToolsRegistered: z.boolean(),
+  installationRef: z.string().regex(/^inst_[A-Za-z0-9_-]{32}$/u).optional()
 });
 
 const policyOutputSchema = z.object({
@@ -664,7 +666,7 @@ function createWhatsAppPolicyServer(
     "whatsapp_get_connection_status",
     {
       title: "Read WhatsApp connection status",
-      description: "Returns sanitized provider readiness without identifiers, message data, tokens, or secrets.",
+      description: "Returns sanitized provider readiness and an optional opaque installation binding, without provider identifiers, message data, tokens, or secrets.",
       inputSchema: z.object({}),
       outputSchema: connectionStatusOutputSchema,
       annotations: {

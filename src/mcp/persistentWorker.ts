@@ -49,6 +49,7 @@ import { createSandboxBotBridge } from "../meta/sandboxBotBridge.js";
 import { createSandboxFlowAdmin } from "../meta/sandboxFlowAdmin.js";
 import { createSandboxFlowMessaging } from "../meta/sandboxFlowMessaging.js";
 import { opaqueConversationRef } from "../meta/conversationEvents.js";
+import { opaqueInstallationRef } from "../meta/installationIdentity.js";
 import {
   readWhatsAppSandboxConfig,
   sandboxRecipientAllowed,
@@ -322,7 +323,10 @@ export function createPersistentWhatsAppWorker(
             environment: "development",
             connected: installation?.status === "connected",
             appMode: "development",
-            writeToolsRegistered: Boolean(runtimeMessaging && installation?.status === "connected")
+            writeToolsRegistered: Boolean(runtimeMessaging && installation?.status === "connected"),
+            ...(installation?.status === "connected" ? { installationRef: await opaqueInstallationRef(
+              principal.tenantId, installation.wabaId, installation.phoneNumberId, env.CONVERSATION_REF_SECRET
+            ) } : {})
           };
         },
         ...options,
