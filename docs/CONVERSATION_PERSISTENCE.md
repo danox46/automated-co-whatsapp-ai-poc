@@ -1,7 +1,10 @@
 # Conversation persistence
 
-This local implementation co-locates signed Meta webhook ingestion, durable
-conversation storage, and read-only MCP tools. It is not deployed.
+The combined Worker co-locates signed Meta webhook ingestion, durable conversation
+storage, authenticated MCP tools and policy-enforced provider dispatch. The
+existing sandbox deployment was checked on 2026-10-24: fresh provider verification
+returned a connected phone and subscribed app. This is not public onboarding
+approval or proof of a fresh message cycle.
 
 ## Trust boundaries
 
@@ -36,8 +39,12 @@ message text or template names, timestamps, delivery state, unread counts,
 last verified inbound time, opt-out state, automation-pause state, and a policy
 revision. Message IDs are unique so webhook retries do not duplicate history.
 
-Raw Meta webhook bodies, access tokens, secrets, media bytes, media URLs, and
-unrecognized fields are not stored. Public conversation references are HMAC
+Raw Meta webhook bodies, media URLs and unrecognized fields are not stored in
+conversation history. Supported JPEG/PNG inbound image bytes up to 5 MiB are
+captured in SQLite attachment chunks, bound to a conversation and attachment
+reference. They are deleted when the associated message is pruned or the
+conversation is deleted. Encrypted provider credentials live in a separate
+installation store, not conversation history. Public conversation references are HMAC
 derived with `CONVERSATION_REF_SECRET` so phone-number-like provider IDs are not
 exposed to MCP clients.
 
@@ -51,9 +58,11 @@ contain opaque message and conversation references, direction, normalized kind,
 optional bounded text or template name, occurrence time, and delivery status.
 The connection and policy tools return configuration/status metadata only.
 
-They never return provider account or participant identifiers, access or refresh
-tokens, signing material, raw webhook bodies, arbitrary provider JSON, media
-bytes, or media URLs. The production logging contract is metadata-only: event
+History results never return provider account or participant identifiers, access
+or refresh tokens, signing material, raw webhook bodies, arbitrary provider JSON
+or media URLs. The separate `whatsapp_get_attachment` tool requires
+`whatsapp.media.read` and returns supported stored images as native MCP image
+content. The production logging contract is metadata-only: event
 type, tenant-safe correlation reference, timestamp, duration, outcome code, and
 policy revision. Credentials, authorization headers, phone numbers, display
 names, message/template content, tool arguments, and raw provider errors must be
@@ -74,9 +83,10 @@ machine-local values for:
 configuration. Replace it with the OAuth-bound installation mapping before a
 multi-tenant deployment.
 
-The default Worker intentionally has no token verifier, so tool discovery is
-available but every protected invocation fails closed. Inject a production
-OAuth verifier before deployment; never add a committed development bypass.
+The combined `persistentWorker.ts` entry point wires the OAuth provider and
+tenant binding when configured. The separate minimal `worker.ts` entry point
+remains deny-all. Never add a development bypass. Source configuration and
+`/health` are not substitutes for actual client or provider acceptance.
 
 ## Retention
 

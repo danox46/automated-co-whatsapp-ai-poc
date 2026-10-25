@@ -72,9 +72,9 @@ describe("protected WhatsApp MCP handler", () => {
       authorization_servers: [resource],
       scopes_supported: ["whatsapp.policy.read", "whatsapp.connection.read", "whatsapp.conversations.read", "whatsapp.media.read", "whatsapp.messages.send"],
       bearer_methods_supported: ["header"],
-      resource_documentation: "https://automatedandco.danienremoto.com/mcp/whatsapp/",
-      resource_policy_uri: "https://automatedandco.danienremoto.com/mcp/whatsapp/privacidad/",
-      resource_tos_uri: "https://automatedandco.danienremoto.com/mcp/whatsapp/terminos/"
+      resource_documentation: "https://morningarp.com/products/whatsapp-bot/",
+      resource_policy_uri: "https://morningarp.com/integrations/whatsapp/privacy/",
+      resource_tos_uri: "https://morningarp.com/integrations/whatsapp/terms/"
     });
   });
 
@@ -98,6 +98,54 @@ describe("protected WhatsApp MCP handler", () => {
   it("rejects tokens in query strings", async () => {
     const response = await createAuthorizedHandler().fetch(new Request(`${resource}/mcp?access_token=leak`, { method: "POST" }));
     expect(response.status).toBe(400);
+  });
+
+  it("returns SDK-readable OAuth errors for every configured tool without invoking protected readers or dispatch", async () => {
+    let protectedCalls = 0;
+    const forbidden = async (): Promise<never> => {
+      protectedCalls += 1;
+      throw new Error("Unauthenticated code reached a protected operation");
+    };
+    const handler = createProtectedWhatsAppMcpHandler({
+      resource,
+      authorizationServer: resource,
+      getConnectionStatus: forbidden,
+      conversationReader: { listConversations: forbidden, getConversationHistory: forbidden },
+      attachmentReader: { getAttachmentContent: forbidden },
+      messaging: {
+        ...closedWindowMessaging(),
+        resolveConversation: forbidden,
+        dispatchReplyWithPolicy: forbidden,
+        dispatchTemplateWithPolicy: forbidden
+      }
+    });
+    const client = new Client({ name: "all-tool-auth-regression", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+      fetch: (url, init) => handler.fetch(new Request(url, init))
+    });
+    try {
+      await client.connect(transport);
+      const tools = (await client.listTools()).tools;
+      expect(tools).toHaveLength(8);
+      const args: Record<string, Record<string, unknown>> = {
+        whatsapp_get_policy: {}, whatsapp_get_connection_status: {},
+        whatsapp_evaluate_action: { action: "read_policy" },
+        whatsapp_list_conversations: {},
+        whatsapp_get_conversation_history: { conversationRef: "conv_auth_test" },
+        whatsapp_get_attachment: { conversationRef: "conv_auth_test", attachmentRef: "att_" + "a".repeat(32) },
+        whatsapp_reply_to_inbound: { conversationRef: "conv_auth_test", text: "test", idempotencyKey: "auth-boundary-reply" },
+        whatsapp_send_template: { conversationRef: "conv_auth_test", templateName: "hello_world", variables: [], idempotencyKey: "auth-boundary-template" }
+      };
+      for (const tool of tools) {
+        const result = await client.callTool({ name: tool.name, arguments: args[tool.name] });
+        expect(result.isError, tool.name).toBe(true);
+        expect(result.structuredContent, tool.name).toMatchObject({ ok: false, error: { code: "MCP_AUTHENTICATION_REQUIRED" } });
+        expect(result._meta?.["mcp/www_authenticate"], tool.name).toEqual([expect.stringContaining('error="invalid_token"')]);
+      }
+      expect(protectedCalls).toBe(0);
+    } finally {
+      await client.close();
+    }
   });
 
   it("lists only the approved read-only tools", async () => {

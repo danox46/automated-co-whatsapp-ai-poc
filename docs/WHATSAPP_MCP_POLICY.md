@@ -1,5 +1,22 @@
 # WhatsApp MCP policy boundary
 
+## Current deployment note (2026-10-24)
+
+The combined sandbox Worker is deployed with OAuth, tenant-bound persistence,
+provider reply/template tools and inbound image retrieval. Fresh provider-status
+readback confirmed a connected phone and app subscription. Earlier sections
+describing a local-only or acknowledgement-only production entry point are
+historical architecture notes, not current deployment status. The minimal
+deny-all entry point remains distinct from `persistentWorker.ts`.
+
+Policy version 2026-10-24 links to Morning's integration-specific public privacy,
+terms and support-assisted deletion instructions. These replace the legacy
+brand URLs without changing OAuth scopes, audience, tenant mappings, credentials,
+recipient allowlists or messaging policy. App Live mode is not Advanced Access
+approval. The current SDK2 client accepts authentication-error results; a retained
+all-tool invocation regression verifies denial occurs before protected reads or
+provider dispatch. It does not claim an SDK1.32.1 retest or normal user login.
+
 This repository contains a Streamable HTTP MCP handler for the WhatsApp lane. It is capability-maximizing and policy-enforced: compliant messaging tools are registered when a server-side Meta provider capability is configured, while the production entry point remains inaccessible until the OAuth verifier and provider dependencies are connected. The MCP handler is not deployed yet.
 
 Every advertised tool declares an output schema plus explicit `readOnlyHint`,

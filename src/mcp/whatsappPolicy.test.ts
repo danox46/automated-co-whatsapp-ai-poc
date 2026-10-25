@@ -6,10 +6,22 @@ import {
   WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
   WHATSAPP_MCP_TOOL_ALLOWLIST,
   WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST,
-  WHATSAPP_MCP_WRITE_ACTIONS
+  WHATSAPP_MCP_WRITE_ACTIONS,
+  WHATSAPP_POLICY_URLS,
+  WHATSAPP_POLICY_VERSION
 } from "./whatsappPolicy.js";
 
 describe("WhatsApp MCP policy", () => {
+  it("advertises the current Morning integration notices, not legacy brand policies", () => {
+    expect(WHATSAPP_POLICY_VERSION).toBe("2026-10-24");
+    expect(WHATSAPP_POLICY_URLS).toEqual({
+      overview: "https://morningarp.com/products/whatsapp-bot/",
+      privacy: "https://morningarp.com/integrations/whatsapp/privacy/",
+      terms: "https://morningarp.com/integrations/whatsapp/terms/",
+      deletion: "https://morningarp.com/integrations/whatsapp/deletion/",
+      support: "https://morningarp.com/contact/"
+    });
+  });
   it("defines read tools and provider-backed messaging tools separately", () => {
     expect(WHATSAPP_MCP_READ_TOOL_ALLOWLIST).toEqual([
       "whatsapp_get_policy",
