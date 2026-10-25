@@ -184,7 +184,11 @@ export function createPersistentWhatsAppWorker(
             morning = new MorningOperatorSessions({ origin: resource, issuer: env.MORNING_ISSUER, clientId: env.MORNING_CLIENT_ID,
               encryptionKey: env.INSTALLATION_ENCRYPTION_KEY, bindings: JSON.parse(env.MORNING_OPERATOR_BINDINGS), store: oauthState.morningStore,
               request: options.morningRequest,
-              installationConnected: async tenantId => (await registry.getInstallation(tenantId))?.status === 'connected' });
+              installationConnected: async tenantId => (await registry.getInstallation(tenantId))?.status === 'connected',
+              installationReference: async tenantId => {
+                const installation = await registry.getInstallation(tenantId);
+                return installation?.status === 'connected' ? opaqueInstallationRef(tenantId, installation.wabaId, installation.phoneNumberId, env.CONVERSATION_REF_SECRET) : null;
+              } });
             morningSessions.set(env, morning);
           }
           const loginResponse = await morning.handle(request);

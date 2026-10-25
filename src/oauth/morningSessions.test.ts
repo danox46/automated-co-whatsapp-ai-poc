@@ -38,7 +38,8 @@ async function fixture(multiple = false) {
   const connected = new Set(multiple ? ['morning-demo', 'client-b'] : ['morning-demo']);
   const sessions = new MorningOperatorSessions({ origin, issuer, clientId, encryptionKey: 'a'.repeat(43),
     bindings: [{ subject, installations: [{ tenantId: 'morning-demo', label: 'Morning demo' }, ...(multiple ? [{ tenantId: 'client-b', label: 'Business B' }] : [])] }],
-    store, request, now: () => now, installationConnected: async id => connected.has(id) });
+    store, request, now: () => now, installationConnected: async id => connected.has(id),
+    installationReference: async id => `inst_${(id === 'client-b' ? 'b' : 'a').repeat(32)}` });
   const returnTo = origin + '/oauth/authorize?client_id=urn%3Amorning%3Awhatsapp-bot&state=native-state';
   const begin = async () => {
     const response = await sessions.start(new Request(returnTo)); expect(response.status).toBe(303);
@@ -51,6 +52,18 @@ async function fixture(multiple = false) {
     revoke: () => { validUserInfo = false; }, unknownSubject: () => { tokenSubject = `morning:oidc-${'b'.repeat(32)}`; }, corruptNonce: () => { badNonce = true; }, advance: (ms: number) => { now += ms; } };
 }
 describe('Morning operator to WhatsApp installation sign-in', () => {
+  it('honors an assigned profile reference over the browser previous choice and denies foreign or duplicate references', async () => {
+    const f = await fixture(true), response = (await (await f.begin()).finish())!, sessionCookie = cookie(response, '__Host-wa_morning_session');
+    const picker = (await f.sessions.handle(new Request(origin + '/auth/select', { headers: { cookie: sessionCookie } })))!;
+    const csrf = /name="csrf" value="([^"]+)"/u.exec(await picker.text())![1];
+    await f.sessions.handle(new Request(origin + '/auth/select', { method: 'POST', headers: { cookie: sessionCookie, origin, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, tenantId: 'morning-demo' }) }));
+    const requested = new URL(f.returnTo); requested.searchParams.set('installation_ref', `inst_${'b'.repeat(32)}`);
+    expect(await f.sessions.resolve(new Request(requested, { headers: { cookie: sessionCookie } }))).toMatchObject({ tenantId: 'client-b' });
+    requested.searchParams.set('installation_ref', `inst_${'c'.repeat(32)}`);
+    expect((await f.sessions.resolve(new Request(requested, { headers: { cookie: sessionCookie } })) as Response).status).toBe(403);
+    requested.searchParams.append('installation_ref', `inst_${'a'.repeat(32)}`);
+    expect((await f.sessions.resolve(new Request(requested, { headers: { cookie: sessionCookie } })) as Response).status).toBe(400);
+  });
   it('uses signed OIDC/PKCE and the explicit subject binding, persists encrypted identity only, and rejects callback replay', async () => {
     const f = await fixture(), flow = await f.begin(), response = (await flow.finish())!;
     expect(response.status).toBe(303); expect(response.headers.get('location')).toBe(f.returnTo);

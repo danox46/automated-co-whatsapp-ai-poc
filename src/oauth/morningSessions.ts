@@ -28,6 +28,7 @@ export class MorningOperatorSessions {
   private configuration?: Promise<oidc.Configuration>;
   constructor(private readonly options: { origin: string; issuer: string; clientId: string; encryptionKey: string;
     bindings: unknown; store: MorningLoginStore; installationConnected: (tenantId: string) => Promise<boolean>;
+    installationReference?: (tenantId: string) => Promise<string | null>;
     request?: NonNullable<oidc.DiscoveryRequestOptions[typeof oidc.customFetch]>; now?: () => number;
   }) {
     for (const value of [options.origin, options.issuer]) { const url = new URL(value); if (url.protocol !== 'https:' || url.origin !== value) throw new Error('Exact HTTPS sign-in origins required'); }
@@ -64,6 +65,11 @@ export class MorningOperatorSessions {
   private validReturn(value: string) {
     try { const url = new URL(value); return url.origin === this.options.origin && url.pathname === '/oauth/authorize' && !url.hash && value.length <= 16384; } catch { return false; }
   }
+  private requestedReference(value: string): string | Response | undefined {
+    const values = new URL(value).searchParams.getAll('installation_ref');
+    if (values.length > 1 || (values.length === 1 && !/^inst_[A-Za-z0-9_-]{32}$/u.test(values[0]))) return this.problem('The selected business reference is invalid. Restart bot setup.');
+    return values[0];
+  }
   private page(title: string, body: string, status = 200, cookies: string[] = []) {
     const responseHeaders = new Headers({ ...headers, 'Content-Type': 'text/html; charset=utf-8',
       'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
@@ -77,6 +83,7 @@ export class MorningOperatorSessions {
   }
   async start(request: Request) {
     if (request.method !== 'GET' || !this.validReturn(request.url)) return this.problem('Restart the connection from the bot setup page.');
+    const requested = this.requestedReference(request.url); if (requested instanceof Response) return requested;
     try {
       const config = await this.config(), handle = randomBase64Url(32);
       const flow: Flow = { state: oidc.randomState(), nonce: oidc.randomNonce(), verifier: oidc.randomPKCECodeVerifier(), returnTo: request.url };
@@ -106,7 +113,8 @@ export class MorningOperatorSessions {
       const subject = tokens.claims()?.sub;
       if (!subject || !this.binding(subject)) return this.problem('This Morning account is not assigned to a WhatsApp installation. Ask the operator to check the business assignment.', 403, [clear]);
       await oidc.fetchUserInfo(config, tokens.access_token, subject);
-      const choices = await this.connected(subject);
+      const requested = this.requestedReference(flow.returnTo); if (requested instanceof Response) throw new Error('Invalid installation reference');
+      const assigned = await this.connected(subject), choices = requested ? assigned.filter(x => x.installationRef === requested) : assigned;
       if (!choices.length) return this.problem('No connected WhatsApp business is assigned to this account. Complete the business connection first.', 403, [clear]);
       const rawSession = randomBase64Url(32), session: Session = { subject, identityAccessToken: tokens.access_token, returnTo: flow.returnTo, csrf: randomBase64Url(32),
         ...(choices.length === 1 ? { tenantId: choices[0].tenantId } : {}) };
@@ -118,7 +126,12 @@ export class MorningOperatorSessions {
   }
   private async connected(subject: string) {
     const allowed = this.binding(subject)?.installations ?? [];
-    const present = await Promise.all(allowed.map(async entry => await this.options.installationConnected(entry.tenantId) ? entry : undefined));
+    const present = await Promise.all(allowed.map(async (entry): Promise<(typeof entry & { installationRef?: string }) | undefined> => {
+      if (!await this.options.installationConnected(entry.tenantId)) return undefined;
+      if (!this.options.installationReference) return entry;
+      const installationRef = await this.options.installationReference(entry.tenantId);
+      return installationRef && /^inst_[A-Za-z0-9_-]{32}$/u.test(installationRef) ? { ...entry, installationRef } : undefined;
+    }));
     return present.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
   }
   private async session(request: Request): Promise<{ value: Session; hash: string; sealed: string } | Response | null> {
@@ -135,10 +148,13 @@ export class MorningOperatorSessions {
     }
   }
   async resolve(request: Request): Promise<OAuthAuthorizedSession | Response | null> {
+    const requested = this.requestedReference(request.url); if (requested instanceof Response) return requested;
     const current = await this.session(request); if (!current || current instanceof Response) return current;
-    const selected = current.value.tenantId;
+    const choices = await this.connected(current.value.subject);
+    const selected = requested ? choices.find(x => x.installationRef === requested)?.tenantId : current.value.tenantId;
+    if (requested && !selected) return this.problem('The requested business is disconnected or not assigned to this Morning account.', 403);
     if (!selected) return this.redirect(this.options.origin + '/auth/select');
-    if (!(await this.connected(current.value.subject)).some(x => x.tenantId === selected)) return this.problem('The selected business is disconnected or no longer assigned to this Morning account.', 403);
+    if (!choices.some(x => x.tenantId === selected)) return this.problem('The selected business is disconnected or no longer assigned to this Morning account.', 403);
     return { subject: current.value.subject, tenantId: selected, approvedScopes: new Set(SUPPORTED_WHATSAPP_MCP_SCOPES) };
   }
   private async select(request: Request) {
@@ -146,6 +162,7 @@ export class MorningOperatorSessions {
     if (!current) return this.problem('This sign-in has expired. Restart the connection.', 401);
     if (current instanceof Response) return current;
     const choices = await this.connected(current.value.subject);
+    if (!choices.length) return this.problem('No connected business is assigned to this account. Complete the business connection first.', 403);
     if (request.method === 'GET') return this.page('Choose your business', `<p>Select the connected WhatsApp business for this bot.</p><form method="post" action="/auth/select"><input type="hidden" name="csrf" value="${escape(current.value.csrf)}">${choices.map(x => `<label><input type="radio" name="tenantId" value="${escape(x.tenantId)}" required> ${escape(x.label)}</label>`).join('')}<button type="submit">Continue</button></form>`);
     if (request.method !== 'POST') return this.problem('Choose a business using the connection form.', 405);
     if (request.headers.get('origin') !== this.options.origin || !request.headers.get('content-type')?.startsWith('application/x-www-form-urlencoded')) return this.problem('Restart the business selection form.', 403);

@@ -6,6 +6,7 @@ import { createPilotInstallationRegistry } from '../src/meta/pilotInstallationSt
 import { encryptPilotSecret, randomBase64Url, sha256Base64Url } from '../src/meta/pilotCrypto.js';
 import { NATIVE_WHATSAPP_BOT_CLIENT_ID } from '../src/oauth/nativeBotClient.js';
 import { SUPPORTED_WHATSAPP_MCP_SCOPES } from '../src/mcp/auth.js';
+import { opaqueInstallationRef } from '../src/meta/installationIdentity.js';
 
 describe('Worker Morning identity routing', () => {
   it('binds the native bot to the selected Morning installation even when the browser retains another Meta pilot cookie; existing clients retain their pilot path', async () => {
@@ -22,6 +23,7 @@ describe('Worker Morning identity routing', () => {
     const authorization = (clientId: string, redirectUri: string) => new URL(origin + '/oauth/authorize?' + new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri,
       response_type: 'code', resource: origin, scope: 'whatsapp.policy.read whatsapp.connection.read', code_challenge_method: 'S256', code_challenge: 'a'.repeat(43), state: 'native-state' }));
     const nativeUrl = authorization(NATIVE_WHATSAPP_BOT_CLIENT_ID, effective.BOT_OAUTH_REDIRECT_URI!);
+    nativeUrl.searchParams.set('installation_ref', await opaqueInstallationRef(selected, '800' + suffix, '900' + suffix, effective.CONVERSATION_REF_SECRET));
     const value = { subject, identityAccessToken: 'synthetic-morning-fixture-only', tenantId: selected, returnTo: nativeUrl.href, csrf: randomBase64Url(32) };
     const sealed = await encryptPilotSecret(JSON.stringify({ namespace: JSON.stringify([origin, issuer, effective.MORNING_CLIENT_ID]), value }), effective.INSTALLATION_ENCRYPTION_KEY!);
     await state.morningStore.putMorningLogin('session', await sha256Base64Url(rawSession), JSON.stringify(sealed), now + 600, now);
@@ -38,6 +40,8 @@ describe('Worker Morning identity routing', () => {
     expect(native.status).toBe(302);
     const code = new URL(native.headers.get('location')!).searchParams.get('code')!;
     expect(await state.store.consumeAuthorizationCode(await sha256Base64Url(code))).toMatchObject({ tenantId: selected, subject });
+    const wrong = new URL(nativeUrl); wrong.searchParams.set('installation_ref', 'inst_' + 'z'.repeat(32));
+    expect((await worker.fetch(new Request(wrong, { headers: { cookie: cookies } }), effective)).status).toBe(403);
     const legacyUrl = authorization('https://chatgpt.com/oauth/client.json', 'https://chatgpt.com/connector_platform_oauth_redirect');
     const legacy = await worker.fetch(new Request(legacyUrl, { headers: { cookie: cookies } }), effective);
     expect(legacy.status).toBe(302);

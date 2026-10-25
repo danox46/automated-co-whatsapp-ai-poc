@@ -58,6 +58,13 @@ assignments use the same-origin CSRF-bound picker. The standard MCP grant still
 contains exactly one tenant. An old Meta signup cookie cannot override that
 choice. Existing ChatGPT/pilot clients keep their existing session path.
 
+The native profile also sends its opaque `installation_ref` in the authorization
+request. Morning matches it only against this operator's assigned, connected
+installations, deriving each reference from current server-side assets. This
+explicit profile choice takes precedence over a previously selected business in
+the browser and avoids repeating a picker for each installation. Foreign, stale
+or ambiguous references are denied; the parameter never grants access by itself.
+
 OIDC flow verifiers and delegated identity handles persist encrypted in the
 existing OAuth Durable Object, namespaced to origin/issuer/client. Flow lifetime
 is five minutes. Browser sessions last at most one hour and no longer than the
