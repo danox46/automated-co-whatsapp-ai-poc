@@ -44,6 +44,12 @@ text or credentials. `reserved` means the outcome remains unconfirmed; elapsed
 time, empty history or a separate billing warning is not proof of rejection.
 Never turn this diagnostic into a resend, replacement key or direct database edit.
 
+For permission failures, `pilot-admin.ps1 provider-status <origin> <tenant>
+--credential-check` adds an opaque token fingerprint to the existing owner-only
+readback. Compare it in-process with the protected local reference to detect a
+stale installation credential. It returns neither the token nor encrypted
+credential data; ordinary status and connected-agent tools do not expose it.
+
 Only a structured numeric Graph error on a definitive 4xx response (excluding
 408/429) records `provider_rejected` with its code/status on the original
 reservation. Text, template and draft sends replay that refusal without another

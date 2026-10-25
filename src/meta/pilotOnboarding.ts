@@ -4,7 +4,8 @@ import {
   decryptPilotSecret,
   encryptPilotSecret,
   randomBase64Url,
-  secureEqualText
+  secureEqualText,
+  sha256Base64Url
 } from "./pilotCrypto.js";
 import { SUPPORTED_WHATSAPP_MCP_SCOPES } from "../mcp/auth.js";
 import type { WhatsAppSandboxConfig } from "./sandboxConfig.js";
@@ -406,7 +407,10 @@ export function createPilotOnboardingHandler(
         ok: true,
         status: installation.status,
         providerPhoneVerified: true,
-        providerSubscription: subscribed ? "subscribed" : "missing"
+        providerSubscription: subscribed ? "subscribed" : "missing",
+        ...(new URL(request.url).searchParams.get("credentialCheck") === "true"
+          ? { providerCredentialFingerprint: (await sha256Base64Url(accessToken)).slice(0, 16) }
+          : {})
       }, {
         headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
       });

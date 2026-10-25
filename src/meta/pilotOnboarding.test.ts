@@ -508,6 +508,37 @@ describe("closed-pilot onboarding", () => {
     expect(fixture.graph.isAppSubscribed).toHaveBeenCalled();
   });
 
+  it("compares active credentials only through an explicit owner read without revealing them", async () => {
+    const fixture = createFixture();
+    fixture.installations.set("pilot-credential-check", {
+      tenantId: "pilot-credential-check", wabaId: "111222333", phoneNumberId: "444555666",
+      encryptedAccessToken: await encryptPilotSecret("original-provider-token", fixture.encryptionKey),
+      connectedAt: "2026-09-07T12:00:00.000Z", webhookSubscribedAt: "2026-09-07T12:00:00.000Z", status: "connected"
+    });
+    const path = "/admin/pilot/installations/pilot-credential-check/provider-status?credentialCheck=true";
+    const unauthorized = await fixture.handler.fetch(adminRequest(path, "GET", undefined, "wrong"));
+    expect(unauthorized?.status).toBe(401);
+    expect(fixture.graph.verifyPhoneBelongsToWaba).not.toHaveBeenCalled();
+    const read = async () => {
+      const response = await fixture.handler.fetch(adminRequest(path, "GET"));
+      expect(response?.status).toBe(200);
+      const text = await response!.text();
+      expect(text).not.toContain("original-provider-token");
+      expect(text).not.toContain("replacement-provider-token");
+      expect(text).not.toContain("ciphertext");
+      return JSON.parse(text) as { providerCredentialFingerprint: string };
+    };
+    const original = await read();
+    expect(original.providerCredentialFingerprint).toMatch(/^[A-Za-z0-9_-]{16}$/u);
+    const installation = fixture.installations.get("pilot-credential-check")!;
+    installation.encryptedAccessToken = await encryptPilotSecret("original-provider-token", fixture.encryptionKey);
+    expect((await read()).providerCredentialFingerprint).toBe(original.providerCredentialFingerprint);
+    installation.encryptedAccessToken = await encryptPilotSecret("replacement-provider-token", fixture.encryptionKey);
+    expect((await read()).providerCredentialFingerprint).not.toBe(original.providerCredentialFingerprint);
+    const ordinary = await fixture.handler.fetch(adminRequest(path.split("?")[0], "GET"));
+    expect(await ordinary?.text()).not.toContain("providerCredentialFingerprint");
+  });
+
   it("reconciles a stale provider credential while retaining conversation data", async () => {
     const fixture = createFixture();
     fixture.installations.set("pilot-stale", {

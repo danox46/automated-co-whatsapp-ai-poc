@@ -78,7 +78,9 @@ if (command === "sandbox-connect") {
 } else if (command === "provider-status") {
   const tenantId = argumentsAfterOrigin[0];
   if (!tenantId) fail("provider-status requires a tenant ID.");
-  response = await fetch(`${origin}/admin/pilot/installations/${encodeURIComponent(tenantId)}/provider-status`, { headers });
+  const credentialCheck = argumentsAfterOrigin[1];
+  if (argumentsAfterOrigin.length > 2 || (credentialCheck && credentialCheck !== "--credential-check")) fail("provider-status accepts only an optional --credential-check.");
+  response = await fetch(`${origin}/admin/pilot/installations/${encodeURIComponent(tenantId)}/provider-status${credentialCheck ? "?credentialCheck=true" : ""}`, { headers });
 } else if (command === "refresh-sandbox-credential") {
   const tenantId = argumentsAfterOrigin[0];
   if (!tenantId) fail("refresh-sandbox-credential requires a tenant ID.");
