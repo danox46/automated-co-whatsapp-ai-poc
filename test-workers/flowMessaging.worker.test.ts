@@ -70,9 +70,11 @@ describe("policy-enforced draft Flow dispatch", () => {
   });
   it("distinguishes a concrete provider rejection from a timeout without resending either", async () => {
     const f = await fixture();
-    f.sendDraftFlow.mockRejectedValue(new MetaGraphError("META_MESSAGE_DISPATCH_FAILED_139000", 400, false));
-    expect(await f.service.send(f.principal, f.args)).toMatchObject({ ok: false, error: { code: "WHATSAPP_FLOW_PROVIDER_REJECTED", message: expect.stringContaining("139000") } });
-    expect(await f.service.send(f.principal, f.args)).toMatchObject({ ok: false, error: { code: "WHATSAPP_SEND_IN_PROGRESS" } });
+    f.sendDraftFlow.mockRejectedValue(new MetaGraphError("META_MESSAGE_DISPATCH_FAILED_139000", 400, false, true));
+    const refusal = await f.service.send(f.principal, f.args);
+    expect(refusal).toMatchObject({ ok: false, error: { code: "WHATSAPP_FLOW_PROVIDER_REJECTED", providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_139000", providerHttpStatus: 400 } });
+    expect(await f.service.send(f.principal, f.args)).toEqual(refusal);
+    expect(await f.stub.listOutboundDispatchReceipts(f.args.conversationRef)).toEqual([expect.objectContaining({ status: "provider_rejected", providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_139000" })]);
     expect(f.sendDraftFlow).toHaveBeenCalledTimes(1);
   });
   for (const flag of ["recipientOptedOut", "automationPaused"] as const) {

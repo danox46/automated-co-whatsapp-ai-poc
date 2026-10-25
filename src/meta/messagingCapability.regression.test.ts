@@ -83,10 +83,82 @@ async function fixture() {
     ? dispatchFreeFormReply(capability, principal, { conversationRef: "conv-test", text: "Hi", idempotencyKey: key })
     : dispatchApprovedTemplate(capability, principal, { conversationRef: "conv-test", templateName: template.name, variables: ["Hi"], idempotencyKey: key });
   return { db, store, template, installation, getInstallation, sendText, sendTemplate, recipientAllowed,
-    send, setClock: (value: string) => { clock = new Date(value); } };
+    send, reconstructStore: () => new WhatsAppConversationDurableObject(ctx, {}),
+    setClock: (value: string) => { clock = new Date(value); } };
 }
 
 describeWithSqlite("authoritative outbound dispatch regressions", () => {
+  it("migrates a version-six original unknown reservation without reclassifying or deleting it", async () => {
+    const f = await fixture();
+    f.sendText.mockRejectedValue(new Error("Original response lost"));
+    await expect(f.send("reply")).rejects.toThrow("Original response lost");
+    f.db.exec(`ALTER TABLE outbound_dispatches DROP COLUMN provider_rejection_code;
+      ALTER TABLE outbound_dispatches DROP COLUMN provider_rejection_status;
+      ALTER TABLE outbound_dispatches DROP COLUMN provider_rejected_at;
+      DELETE FROM _sql_schema_migrations WHERE id = 7;`);
+    const restored = f.reconstructStore();
+    await restored.initializeTenant("tenant-test");
+    expect(await restored.listOutboundDispatchReceipts("conv-test")).toEqual([
+      { idempotencyKey: "test-send-key", kind: "free_form_reply", status: "reserved", reservedAt: "2026-10-04T11:59:59.000Z" }
+    ]);
+    expect(await f.send("reply")).toMatchObject({ ok: false, error: { code: "WHATSAPP_SEND_IN_PROGRESS" } });
+    expect(f.sendText).toHaveBeenCalledTimes(1);
+  });
+  for (const kind of ["reply", "template"] as const) {
+    it(`retains a real Graph rejection for ${kind} across object reconstruction without resending`, async () => {
+      const f = await fixture();
+      const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+        error: { code: 131042, message: "Sensitive provider details must not be retained" }
+      }), { status: 400, headers: { "Content-Type": "application/json" } }));
+      const graph = graphClient({ appId: "fixture-app", appSecret: "fixture-secret", graphVersion: "v25.0", fetch: request });
+      f.sendText.mockImplementation(() => graph.sendText("fixture-token", "123456789", "15550000001", "Hi"));
+      f.sendTemplate.mockImplementation(() => graph.sendTemplate("fixture-token", "123456789", "15550000001", "status_update", "en_US", ["Hi"]));
+      const result = await f.send(kind);
+      expect(result).toMatchObject({ ok: false, error: {
+        code: "WHATSAPP_PROVIDER_REJECTED", protectedBy: "meta-provider", retryable: false,
+        providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_131042", providerHttpStatus: 400
+      } });
+      expect(JSON.stringify(result)).not.toContain("Sensitive provider details");
+      expect(await f.send(kind)).toEqual(result);
+      expect(request).toHaveBeenCalledTimes(1);
+      const restored = f.reconstructStore();
+      await restored.initializeTenant("tenant-test");
+      const receipts = await restored.listOutboundDispatchReceipts("conv-test");
+      expect(receipts).toEqual([expect.objectContaining({
+        idempotencyKey: "test-send-key", status: "provider_rejected", providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_131042", providerHttpStatus: 400
+      })]);
+      const reservation = f.db.prepare("SELECT request_fingerprint FROM outbound_dispatches WHERE idempotency_key = ?").get("test-send-key") as { request_fingerprint: string };
+      const intent = { idempotencyKey: "test-send-key", requestFingerprint: reservation.request_fingerprint };
+      await restored.cancelUnsentOutboundDispatch(intent);
+      expect(await restored.getOutboundDispatchResult(intent)).toMatchObject({ status: "blocked", reason: "provider_rejected" });
+      await expect(restored.recordProviderRejection({ ...intent, providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_100", providerHttpStatus: 400, rejectedAt: "2026-10-04T12:00:00.000Z" }))
+        .resolves.toEqual({ recorded: false, reason: "receipt_conflict" });
+      expect(await f.send(kind)).toEqual(result);
+      expect(request).toHaveBeenCalledTimes(1);
+    });
+  }
+  for (const scenario of [
+    { name: "provider server failure", status: 500, body: { error: { code: 131000 } } },
+    { name: "provider request timeout", status: 408, body: { error: { code: 131000 } } },
+    { name: "rate limit", status: 429, body: { error: { code: 4 } } },
+    { name: "malformed success", status: 200, body: {} },
+    { name: "unstructured refusal", status: 403, body: {} }
+  ]) {
+    it(`keeps ${scenario.name} uncertain rather than inventing a refusal receipt`, async () => {
+      const f = await fixture();
+      const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(scenario.body), {
+        status: scenario.status, headers: { "Content-Type": "application/json" }
+      }));
+      const graph = graphClient({ appId: "fixture-app", appSecret: "fixture-secret", graphVersion: "v25.0", fetch: request });
+      f.sendText.mockImplementation(() => graph.sendText("fixture-token", "123456789", "15550000001", "Hi"));
+      await expect(f.send("reply")).rejects.toBeInstanceOf(Error);
+      expect(await f.store.listOutboundDispatchReceipts("conv-test")).toEqual([expect.objectContaining({ status: "reserved" })]);
+      expect((await f.store.listOutboundDispatchReceipts("conv-test"))[0]).not.toHaveProperty("providerErrorCode");
+      expect(await f.send("reply")).toMatchObject({ ok: false, error: { code: "WHATSAPP_SEND_IN_PROGRESS" } });
+      expect(request).toHaveBeenCalledTimes(1);
+    });
+  }
+
   it("allows only one provider invocation for concurrent requests with the same key", async () => {
     const f = await fixture();
     const results = await Promise.all([f.send("reply"), f.send("reply")]);

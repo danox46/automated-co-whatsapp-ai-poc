@@ -128,6 +128,7 @@ export type DurableConversationObjectStub = {
   reserveOutboundDispatch(input: OutboundDispatchReservation): Promise<OutboundDispatchReservationResult>;
   getOutboundDispatchResult(input: { idempotencyKey: string; requestFingerprint: string }): Promise<Exclude<OutboundDispatchReservationResult, { status: "ready" }> | null>;
   listOutboundDispatchReceipts(conversationRef: string): Promise<OutboundDispatchReceipt[]>;
+  recordProviderRejection(input: ProviderRejectionReceipt): Promise<ProviderRejectionWriteResult>;
   cancelUnsentOutboundDispatch(input: { idempotencyKey: string; requestFingerprint: string }): Promise<void>;
   completeOutboundDispatch(input: OutboundDispatchCompletion): Promise<void>;
   registerFlowLaunch(input: InternalFlowLaunch): Promise<void>;
@@ -175,17 +176,32 @@ export type OutboundDispatchReservation = {
 export type OutboundDispatchReservationResult =
   | { status: "ready"; providerAccountRef: string; providerParticipantRef: string }
   | { status: "duplicate"; messageRef: string; providerStatus: "accepted" | "queued" | "sent" }
+  | { status: "blocked"; reason: "provider_rejected"; providerErrorCode: string; providerHttpStatus: number }
   | { status: "blocked"; reason: "state_changed" | "recipient_opted_out" | "automation_paused" | "window_closed" | "in_progress" | "template_unavailable" | "template_consent_required" };
 
 export type OutboundDispatchReceipt = {
   idempotencyKey: string;
   kind: string;
-  status: "reserved" | "sent";
+  status: "reserved" | "sent" | "provider_rejected";
   reservedAt: string;
   completedAt?: string;
   messageRef?: string;
   providerStatus?: string;
+  providerErrorCode?: string;
+  providerHttpStatus?: number;
+  rejectedAt?: string;
 };
+
+export type ProviderRejectionReceipt = {
+  idempotencyKey: string;
+  requestFingerprint: string;
+  providerErrorCode: string;
+  providerHttpStatus: number;
+  rejectedAt: string;
+};
+
+export type ProviderRejectionWriteResult = { recorded: true } |
+  { recorded: false; reason: "invalid_proof" | "reservation_unavailable" | "receipt_conflict" };
 
 export type OutboundDispatchCompletion = {
   idempotencyKey: string;
@@ -860,21 +876,48 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     return this.ctx.storage.sql.exec<{
       idempotency_key: string; kind: string; status: "reserved" | "sent"; reserved_at: string;
       completed_at: string | null; message_ref: string | null; provider_status: string | null;
-    }>(`SELECT idempotency_key, kind, status, reserved_at, completed_at, message_ref, provider_status
+      provider_rejection_code: string | null; provider_rejection_status: number | null; provider_rejected_at: string | null;
+    }>(`SELECT idempotency_key, kind, status, reserved_at, completed_at, message_ref, provider_status,
+               provider_rejection_code, provider_rejection_status, provider_rejected_at
         FROM outbound_dispatches WHERE conversation_ref = ? ORDER BY reserved_at DESC LIMIT 20`, conversationRef)
       .toArray().map(row => ({
-        idempotencyKey: row.idempotency_key, kind: row.kind, status: row.status, reservedAt: row.reserved_at,
+        idempotencyKey: row.idempotency_key, kind: row.kind,
+        status: row.provider_rejection_code ? "provider_rejected" : row.status, reservedAt: row.reserved_at,
         ...(row.completed_at ? { completedAt: row.completed_at } : {}),
         ...(row.message_ref ? { messageRef: row.message_ref } : {}),
-        ...(row.provider_status ? { providerStatus: row.provider_status } : {})
+        ...(row.provider_status ? { providerStatus: row.provider_status } : {}),
+        ...(row.provider_rejection_code ? { providerErrorCode: row.provider_rejection_code } : {}),
+        ...(row.provider_rejection_status ? { providerHttpStatus: row.provider_rejection_status } : {}),
+        ...(row.provider_rejected_at ? { rejectedAt: row.provider_rejected_at } : {})
       }));
+  }
+
+  async recordProviderRejection(input: ProviderRejectionReceipt): Promise<ProviderRejectionWriteResult> {
+    this.assertInitialized();
+    if (!/^META_MESSAGE_DISPATCH_FAILED_\d{1,16}$/u.test(input.providerErrorCode) ||
+        !Number.isInteger(input.providerHttpStatus) || input.providerHttpStatus < 400 || input.providerHttpStatus >= 500 ||
+        input.providerHttpStatus === 408 || input.providerHttpStatus === 429) return { recorded: false, reason: "invalid_proof" };
+    try { parseCanonicalIso(input.rejectedAt, "provider rejection time"); } catch { return { recorded: false, reason: "invalid_proof" }; }
+    const row = this.ctx.storage.sql.exec<{
+      request_fingerprint: string; status: string; provider_rejection_code: string | null; provider_rejection_status: number | null;
+    }>("SELECT request_fingerprint, status, provider_rejection_code, provider_rejection_status FROM outbound_dispatches WHERE idempotency_key = ?", input.idempotencyKey).toArray()[0];
+    if (!row || row.status !== "reserved" || row.request_fingerprint !== input.requestFingerprint) return { recorded: false, reason: "reservation_unavailable" };
+    if (row.provider_rejection_code) {
+      if (row.provider_rejection_code !== input.providerErrorCode || row.provider_rejection_status !== input.providerHttpStatus) return { recorded: false, reason: "receipt_conflict" };
+      return { recorded: true };
+    }
+    this.ctx.storage.sql.exec(`UPDATE outbound_dispatches
+      SET provider_rejection_code = ?, provider_rejection_status = ?, provider_rejected_at = ?
+      WHERE idempotency_key = ? AND request_fingerprint = ? AND status = 'reserved'`,
+      input.providerErrorCode, input.providerHttpStatus, input.rejectedAt, input.idempotencyKey, input.requestFingerprint);
+    return { recorded: true };
   }
 
   /** Only the holder of a ready reservation may cancel, and only before provider I/O. */
   async cancelUnsentOutboundDispatch(input: { idempotencyKey: string; requestFingerprint: string }): Promise<void> {
     this.assertInitialized();
     this.ctx.storage.sql.exec(
-      "DELETE FROM outbound_dispatches WHERE idempotency_key = ? AND request_fingerprint = ? AND status = 'reserved'",
+      "DELETE FROM outbound_dispatches WHERE idempotency_key = ? AND request_fingerprint = ? AND status = 'reserved' AND provider_rejection_code IS NULL",
       input.idempotencyKey, input.requestFingerprint
     );
   }
@@ -885,14 +928,19 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       status: "reserved" | "sent";
       message_ref: string | null;
       provider_status: "accepted" | "queued" | "sent" | null;
+      provider_rejection_code: string | null;
+      provider_rejection_status: number | null;
     }>(
-      `SELECT request_fingerprint, status, message_ref, provider_status
+      `SELECT request_fingerprint, status, message_ref, provider_status, provider_rejection_code, provider_rejection_status
        FROM outbound_dispatches WHERE idempotency_key = ?`,
       input.idempotencyKey
     ).toArray()[0];
     if (existing) {
       if (existing.request_fingerprint !== input.requestFingerprint) {
         return { status: "blocked", reason: "state_changed" };
+      }
+      if (existing.provider_rejection_code && existing.provider_rejection_status) {
+        return { status: "blocked", reason: "provider_rejected", providerErrorCode: existing.provider_rejection_code, providerHttpStatus: existing.provider_rejection_status };
       }
       if (existing.status === "sent" && existing.message_ref && existing.provider_status) {
         return { status: "duplicate", messageRef: existing.message_ref, providerStatus: existing.provider_status };
@@ -903,11 +951,11 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   }
 
   async completeOutboundDispatch(input: OutboundDispatchCompletion): Promise<void> {
-    const reservation = this.ctx.storage.sql.exec<{ request_fingerprint: string; status: string }>(
-      "SELECT request_fingerprint, status FROM outbound_dispatches WHERE idempotency_key = ?",
+    const reservation = this.ctx.storage.sql.exec<{ request_fingerprint: string; status: string; provider_rejection_code: string | null }>(
+      "SELECT request_fingerprint, status, provider_rejection_code FROM outbound_dispatches WHERE idempotency_key = ?",
       input.idempotencyKey
     ).toArray()[0];
-    if (!reservation || reservation.status !== "reserved" || reservation.request_fingerprint !== input.requestFingerprint) {
+    if (!reservation || reservation.status !== "reserved" || reservation.provider_rejection_code || reservation.request_fingerprint !== input.requestFingerprint) {
       throw new Error("Outbound reservation is unavailable");
     }
     await this.ingestMessage({
@@ -1290,6 +1338,12 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       );
       CREATE INDEX idx_flow_launches_expiry ON flow_launches(expires_at);
       INSERT INTO _sql_schema_migrations (id) VALUES (6);
+    `);
+    if (currentVersion < 7) this.ctx.storage.sql.exec(`
+      ALTER TABLE outbound_dispatches ADD COLUMN provider_rejection_code TEXT;
+      ALTER TABLE outbound_dispatches ADD COLUMN provider_rejection_status INTEGER;
+      ALTER TABLE outbound_dispatches ADD COLUMN provider_rejected_at TEXT;
+      INSERT INTO _sql_schema_migrations (id) VALUES (7);
     `);
   }
 

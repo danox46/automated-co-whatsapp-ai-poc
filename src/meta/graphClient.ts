@@ -33,7 +33,8 @@ export class MetaGraphError extends Error {
   constructor(
     public readonly code: string,
     public readonly status: number,
-    public readonly retryable: boolean
+    public readonly retryable: boolean,
+    public readonly definiteRejection = false
   ) {
     super(code);
     this.name = "MetaGraphError";
@@ -496,9 +497,10 @@ async function readMetaJson(response: Response, maximumBytes: number, signal: Ab
 
 function metaError(response: Response, body: Record<string, unknown>, fallback: string): MetaGraphError {
   const error = isRecord(body.error) ? body.error : null;
-  const providerCode = typeof error?.code === "number" ? String(error.code) : null;
+  const providerCode = typeof error?.code === "number" && Number.isSafeInteger(error.code) && error.code >= 0 ? String(error.code) : null;
   const code = providerCode ? `${fallback}_${providerCode}` : fallback;
-  return new MetaGraphError(code, response.status || 502, response.status === 429 || response.status >= 500);
+  return new MetaGraphError(code, response.status || 502, response.status === 429 || response.status >= 500,
+    Boolean(providerCode && response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429));
 }
 
 function assertProviderId(value: string, label: string): void {

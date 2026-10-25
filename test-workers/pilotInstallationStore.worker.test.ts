@@ -40,6 +40,16 @@ describe("pilot installation Durable Objects", () => {
     expect((await exports.default.fetch(request(url, "POST"))).status).toBe(405);
     expect(await stub.getOutboundDispatchResult({ idempotencyKey: "receipt-key-20", requestFingerprint: fingerprint }))
       .toEqual({ status: "blocked", reason: "in_progress" });
+    await expect(stub.recordProviderRejection({ idempotencyKey: "receipt-key-20", requestFingerprint: await sha256Base64Url("wrong-owner"),
+      providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_131042", providerHttpStatus: 400, rejectedAt: "2026-10-25T12:01:00.000Z" }))
+      .resolves.toEqual({ recorded: false, reason: "reservation_unavailable" });
+    await stub.recordProviderRejection({ idempotencyKey: "receipt-key-20", requestFingerprint: fingerprint,
+      providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_131042", providerHttpStatus: 400, rejectedAt: "2026-10-25T12:01:00.000Z" });
+    const rejected = await exports.default.fetch(request(url));
+    expect((await rejected.json() as { dispatches: Array<Record<string, unknown>> }).dispatches[0]).toMatchObject({
+      status: "provider_rejected", providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_131042", providerHttpStatus: 400,
+      rejectedAt: "2026-10-25T12:01:00.000Z"
+    });
   });
 
   it("switches and rolls back a sender without mixing routes, history or reply windows", async () => {

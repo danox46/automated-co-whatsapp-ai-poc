@@ -67,6 +67,33 @@ function closedWindowMessaging(): WhatsAppMessagingCapability {
 }
 
 describe("protected WhatsApp MCP handler", () => {
+  it("preserves normalized provider refusal fields through the actual SDK output schemas", async () => {
+    const diagnostics = { providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_131042", providerHttpStatus: 400 };
+    const messaging = closedWindowMessaging();
+    messaging.now = () => new Date("2026-09-04T12:01:00.000Z");
+    messaging.dispatchReplyWithPolicy = async () => ({ allowed: false, code: "WHATSAPP_PROVIDER_REJECTED",
+      message: "The original provider refusal is retained", retryable: false, protectedBy: "meta-provider", ...diagnostics });
+    const handler = createAuthorizedHandler(messaging, undefined, undefined, {
+      guaranteesDurableIdempotency: true, send: async () => ({ ok: false, error: {
+        code: "WHATSAPP_FLOW_PROVIDER_REJECTED", message: "The original provider refusal is retained", retryable: false, ...diagnostics
+      } })
+    });
+    const client = new Client({ name: "refusal-schema-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+        requestInit: { headers: { Authorization: "Bearer valid-test-token" } }, fetch: (url, init) => handler.fetch(new Request(url, init))
+      }));
+      for (const tool of [
+        { name: "whatsapp_reply_to_inbound", arguments: { conversationRef: "conversation_123", text: "Hi", idempotencyKey: "original-refusal-key" } },
+        { name: "whatsapp_send_flow", arguments: { conversationRef: `conv_${"a".repeat(32)}`, flowType: "visit", idempotencyKey: "original-flow-refusal-key" } }
+      ]) {
+        const result = await client.callTool(tool);
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({ ok: false, error: { ...diagnostics, retryable: false } });
+      }
+    } finally { await client.close(); }
+  });
+
   it("exposes draft Flow launch to the intended SDK with write scope and structured receipts", async () => {
     let calls = 0;
     const handler = createAuthorizedHandler(undefined, undefined, undefined, { guaranteesDurableIdempotency: true, send: async (_principal, args) => {

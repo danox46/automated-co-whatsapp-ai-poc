@@ -227,7 +227,9 @@ const protectionDecisionSchema = z.object({
   code: z.string(),
   message: z.string(),
   retryable: z.boolean(),
-  protectedBy: z.enum(["whatsapp-business-policy", "mcp-authorization", "business-safety-policy"]),
+  protectedBy: z.enum(["whatsapp-business-policy", "mcp-authorization", "business-safety-policy", "meta-provider"]),
+  providerErrorCode: z.string().regex(/^[A-Z0-9_]{1,100}$/u).optional(),
+  providerHttpStatus: z.number().int().min(400).max(499).optional(),
   requiredAction: z.enum(["approved_template_required", "customer_message_required", "human_review_required"]).optional(),
   suggestedTool: z.literal("whatsapp_send_template").optional(),
   windowClosedAt: z.string().optional()
@@ -645,7 +647,8 @@ function createWhatsAppPolicyServer(
       inputSchema: z.strictObject({ conversationRef: z.string().regex(/^conv_[A-Za-z0-9_-]{32}$/), flowType: z.enum(["visit", "wholesale"]), idempotencyKey: z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/), text: z.string().trim().min(1).max(1024).regex(/^[^\u0000]*$/u).optional() }),
       outputSchema: z.discriminatedUnion("ok", [
         z.object({ ok: z.literal(true), messageRef: z.string(), status: z.enum(["accepted", "queued", "sent"]), flowType: z.enum(["visit", "wholesale"]) }),
-        z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }) })
+        z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean(),
+          providerErrorCode: z.string().regex(/^[A-Z0-9_]{1,100}$/u).optional(), providerHttpStatus: z.number().int().min(400).max(499).optional() }) })
       ]),
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: flowMessaging.guaranteesDurableIdempotency },
       _meta: oauthSecurityMetadata([MESSAGE_SEND_SCOPE])

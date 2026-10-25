@@ -44,6 +44,16 @@ text or credentials. `reserved` means the outcome remains unconfirmed; elapsed
 time, empty history or a separate billing warning is not proof of rejection.
 Never turn this diagnostic into a resend, replacement key or direct database edit.
 
+Only a structured numeric Graph error on a definitive 4xx response (excluding
+408/429) records `provider_rejected` with its code/status on the original
+reservation. Text, template and draft sends replay that refusal without another
+provider invocation. The MCP exposes normalized provider error fields; raw
+provider messages, tokens and payloads are not retained. Schema version 7 adds
+nullable rejection fields, preserving old unknown reservations unchanged.
+Timeouts, 5xx, malformed successes and missing proof remain `reserved`. A failure
+to durably save the rejection also remains uncertain. This does not retroactively
+resolve the initial dedicated-line canary or allow it to be resent.
+
 ## Historical Meta test-number setup
 
 The app-owned Meta test number used the existing MCP webhook. A separate

@@ -29,6 +29,7 @@ export type WhatsAppProtectionCode =
   | "WHATSAPP_CONVERSATION_NOT_AVAILABLE"
   | "WHATSAPP_CONVERSATION_STATE_CHANGED"
   | "WHATSAPP_SEND_IN_PROGRESS"
+  | "WHATSAPP_PROVIDER_REJECTED"
   | "WHATSAPP_RECIPIENT_OPTED_OUT"
   | "WHATSAPP_SANDBOX_RECIPIENT_NOT_ALLOWED"
   | "WHATSAPP_AUTOMATION_PAUSED"
@@ -44,7 +45,9 @@ export type WhatsAppProtectionDecision = {
   code: WhatsAppProtectionCode;
   message: string;
   retryable: boolean;
-  protectedBy: "whatsapp-business-policy" | "mcp-authorization" | "business-safety-policy";
+  protectedBy: "whatsapp-business-policy" | "mcp-authorization" | "business-safety-policy" | "meta-provider";
+  providerErrorCode?: string;
+  providerHttpStatus?: number;
   requiredAction?: "approved_template_required" | "customer_message_required" | "human_review_required";
   suggestedTool?: "whatsapp_send_template";
   windowClosedAt?: string;

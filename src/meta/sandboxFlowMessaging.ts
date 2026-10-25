@@ -2,16 +2,16 @@ import type { WhatsAppMcpPrincipal } from "../mcp/auth.js";
 import type { DurableConversationNamespace } from "../mcp/durableConversationStore.js";
 import { evaluateFreeFormReply, WHATSAPP_CUSTOMER_SERVICE_WINDOW_MS } from "../mcp/outboundPolicy.js";
 import type { createMetaGraphClient } from "./graphClient.js";
-import { MetaGraphError } from "./graphClient.js";
 import type { createPilotInstallationRegistry } from "./pilotInstallationStore.js";
 import { decryptPilotSecret, sha256Base64Url } from "./pilotCrypto.js";
 import { flowToken, type SandboxFlowKind } from "./flowResponses.js";
 import type { WhatsAppSandboxConfig } from "./sandboxConfig.js";
+import { providerRejectionDecision, recordDefiniteProviderRejection } from "./providerRejection.js";
 
 export type DraftFlowSendInput = { conversationRef: string; flowType: SandboxFlowKind; idempotencyKey: string; text?: string };
 export type DraftFlowSendResult =
   | { ok: true; messageRef: string; status: "accepted" | "queued" | "sent"; flowType: SandboxFlowKind }
-  | { ok: false; error: { code: string; message: string; retryable: boolean } };
+  | { ok: false; error: { code: string; message: string; retryable: boolean; providerErrorCode?: string; providerHttpStatus?: number } };
 export type SandboxFlowMessaging = { guaranteesDurableIdempotency: true; send(principal: WhatsAppMcpPrincipal, input: DraftFlowSendInput): Promise<DraftFlowSendResult> };
 
 const forms = {
@@ -44,6 +44,7 @@ export function createSandboxFlowMessaging(input: {
     const fingerprint = await sha256Base64Url(JSON.stringify({ kind: "draft_flow", conversationRef: args.conversationRef, flowType: args.flowType, flowId, ...form, text }));
     const previous = await stub.getOutboundDispatchResult({ idempotencyKey: args.idempotencyKey, requestFingerprint: fingerprint });
     if (previous?.status === "duplicate") return { ok: true, messageRef: previous.messageRef, status: previous.providerStatus, flowType: args.flowType };
+    if (previous?.status === "blocked" && previous.reason === "provider_rejected") return flowRejection(previous.providerErrorCode, previous.providerHttpStatus);
     if (previous) return failure(previous.reason === "in_progress" ? "WHATSAPP_SEND_IN_PROGRESS" : "WHATSAPP_CONVERSATION_STATE_CHANGED", "The original intent is reserved or differs from this request. Reconcile it; do not create a replacement key.");
     const state = await stub.getConversationEnforcementState(args.conversationRef);
     if (!state || state.providerAccountRef !== input.sandbox.phoneNumberId) return failure("WHATSAPP_CONVERSATION_NOT_AVAILABLE", "This conversation is not bound to the configured sandbox sender.");
@@ -68,6 +69,7 @@ export function createSandboxFlowMessaging(input: {
       requestFingerprint: fingerprint, expectedPolicyRevision: state.policyRevision, expectedProviderAccountRef: input.sandbox.phoneNumberId, now: createdAt, notAfter });
     if (reservation.status === "duplicate") return { ok: true, messageRef: reservation.messageRef, status: reservation.providerStatus, flowType: args.flowType };
     if (reservation.status === "blocked") {
+      if (reservation.reason === "provider_rejected") return flowRejection(reservation.providerErrorCode, reservation.providerHttpStatus);
       if (reservation.reason === "window_closed") return failure("WHATSAPP_CUSTOMER_SERVICE_WINDOW_CLOSED", "WhatsApp's 24-hour customer-service window closed before dispatch. This protects the account; wait for a new customer message or use an approved template.");
       if (reservation.reason === "recipient_opted_out") return failure("WHATSAPP_RECIPIENT_OPTED_OUT", "The recipient opted out before dispatch. Nothing was sent.");
       if (reservation.reason === "automation_paused") return failure("WHATSAPP_AUTOMATION_PAUSED", "Human control paused this conversation before dispatch. Nothing was sent.");
@@ -92,9 +94,8 @@ export function createSandboxFlowMessaging(input: {
       await stub.bindFlowLaunchMessage({ tokenHash, conversationRef: args.conversationRef, messageRef: result.messageRef });
       return { ok: true, ...result, flowType: args.flowType };
     } catch (error) {
-      if (error instanceof MetaGraphError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) {
-        return failure("WHATSAPP_FLOW_PROVIDER_REJECTED", `Meta rejected this draft request (HTTP ${error.status}; ${error.code}). Its original intent is retained for inspection; it was not resubmitted.`);
-      }
+      const rejection = await recordDefiniteProviderRejection(stub, { idempotencyKey: args.idempotencyKey, requestFingerprint: fingerprint }, error, now().toISOString());
+      if (rejection) return flowRejection(rejection.providerErrorCode!, rejection.providerHttpStatus!);
       return failure("WHATSAPP_FLOW_OUTCOME_UNKNOWN", "The original draft send requires reconciliation. It was not resubmitted; keep its original intent key and inspect history.");
     }
   } };
@@ -102,4 +103,9 @@ export function createSandboxFlowMessaging(input: {
 
 function failure(code: string, message: string, retryable = false): DraftFlowSendResult {
   return { ok: false, error: { code, message, retryable } };
+}
+
+function flowRejection(providerErrorCode: string, providerHttpStatus: number): DraftFlowSendResult {
+  const decision = providerRejectionDecision(providerErrorCode, providerHttpStatus);
+  return { ok: false, error: { code: "WHATSAPP_FLOW_PROVIDER_REJECTED", message: decision.message, retryable: false, providerErrorCode, providerHttpStatus } };
 }

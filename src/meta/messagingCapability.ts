@@ -11,6 +11,7 @@ import {
 import type { WhatsAppMcpPrincipal } from "../mcp/auth.js";
 import { decryptPilotSecret, sha256Base64Url } from "./pilotCrypto.js";
 import type { createMetaGraphClient } from "./graphClient.js";
+import { providerRejectionDecision, recordDefiniteProviderRejection } from "./providerRejection.js";
 import type { createPilotInstallationRegistry } from "./pilotInstallationStore.js";
 
 export type WhatsAppPolicyDirectory = {
@@ -117,12 +118,14 @@ export function createMetaMessagingCapability(input: {
         await stub.cancelUnsentOutboundDispatch({ idempotencyKey: dispatch.idempotencyKey, requestFingerprint: fingerprint });
         return reservationBlock({ status: "blocked", reason: "window_closed" });
       }
-      const result = await input.graph.sendText(
-        accessToken,
-        installation.phoneNumberId,
-        reservation.providerParticipantRef,
-        dispatch.text
-      );
+      let result;
+      try {
+        result = await input.graph.sendText(accessToken, installation.phoneNumberId, reservation.providerParticipantRef, dispatch.text);
+      } catch (error) {
+        const rejection = await recordDefiniteProviderRejection(stub, { idempotencyKey: dispatch.idempotencyKey, requestFingerprint: fingerprint }, error, now().toISOString());
+        if (rejection) return rejection;
+        throw error;
+      }
       await complete(input.conversations, dispatch.principal, {
         idempotencyKey: dispatch.idempotencyKey,
         requestFingerprint: fingerprint,
@@ -174,14 +177,15 @@ export function createMetaMessagingCapability(input: {
       if (reservation.status === "duplicate") {
         return { messageRef: reservation.messageRef, status: reservation.providerStatus };
       }
-      const result = await input.graph.sendTemplate(
-        accessToken,
-        installation.phoneNumberId,
-        reservation.providerParticipantRef,
-        dispatch.templateName,
-        template.languageCode ?? "en_US",
-        dispatch.variables
-      );
+      let result;
+      try {
+        result = await input.graph.sendTemplate(accessToken, installation.phoneNumberId, reservation.providerParticipantRef,
+          dispatch.templateName, template.languageCode ?? "en_US", dispatch.variables);
+      } catch (error) {
+        const rejection = await recordDefiniteProviderRejection(stub, { idempotencyKey: dispatch.idempotencyKey, requestFingerprint: fingerprint }, error, now().toISOString());
+        if (rejection) return rejection;
+        throw error;
+      }
       await complete(input.conversations, dispatch.principal, {
         idempotencyKey: dispatch.idempotencyKey,
         requestFingerprint: fingerprint,
@@ -235,6 +239,7 @@ async function connectedInstallation(
 }
 
 function reservationBlock(result: Extract<OutboundDispatchReservationResult, { status: "blocked" }>): WhatsAppProtectionDecision {
+  if (result.reason === "provider_rejected") return providerRejectionDecision(result.providerErrorCode, result.providerHttpStatus);
   if (result.reason === "template_unavailable") return templateUnavailable();
   if (result.reason === "template_consent_required") {
     return protection("WHATSAPP_TEMPLATE_CONSENT_REQUIRED", "The recipient has not consented to this template category and purpose. Nothing was sent.");
