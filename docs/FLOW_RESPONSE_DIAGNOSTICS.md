@@ -43,8 +43,12 @@ time and vary one field only for a negative case. In the UI, `10_00_am` means
 channels. No customer notification, appointment confirmation or real order is
 authorized by submitting a control.
 
-The negative visit keeps every baseline answer except phone=`123`. Current
-backend validation should return only `phone / invalid_format`, preserve the
-original rejected receipt, record no completed form and send no completion
-acknowledgment. This is a deliberately invalid control; it is not a claimed
-reproduction of a historical submission whose values were not retained.
+The negative visit keeps every baseline answer except phone=`123`. If received,
+backend validation returns only `phone / invalid_format`, preserves the
+original rejected receipt, records no completed form and sends no completion
+acknowledgment. The current visit definition in `resources/meta/visit-schedule.json`
+also gives the phone field the same 7–40 character bounds and a format hint.
+With those client limits, the manual control should be blocked before Submit;
+closing it should produce no new form response. Keep that phone UI proof
+separate from provider schema validation and the already-observed backend
+rejection. This control does not reproduce historical values that were not retained.

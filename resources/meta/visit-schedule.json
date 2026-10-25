@@ -1,0 +1,122 @@
+{
+  "version": "7.3",
+  "screens": [
+    {
+      "id": "VISIT_SCHEDULE",
+      "title": "Agendar visita",
+      "terminal": true,
+      "success": true,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Agendar visita"
+          },
+          {
+            "type": "TextBody",
+            "text": "Coordina tu visita a El Portal Venezolano."
+          },
+          {
+            "type": "Form",
+            "name": "visit_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "customer_name",
+                "label": "Nombre",
+                "input-type": "text",
+                "required": true
+              },
+              {
+                "type": "TextInput",
+                "name": "phone",
+                "label": "Teléfono",
+                "input-type": "phone",
+                "required": true,
+                "min-chars": 7,
+                "max-chars": 40,
+                "helper-text": "Número de contacto, mínimo 7 caracteres."
+              },
+              {
+                "type": "DatePicker",
+                "name": "visit_date",
+                "label": "Fecha",
+                "required": true
+              },
+              {
+                "type": "Dropdown",
+                "name": "visit_time",
+                "label": "Hora",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "10_00_am",
+                    "title": "10:00 a.m."
+                  },
+                  {
+                    "id": "11_00_am",
+                    "title": "11:00 a.m."
+                  },
+                  {
+                    "id": "12_00_pm",
+                    "title": "12:00 p.m."
+                  },
+                  {
+                    "id": "1_00_pm",
+                    "title": "1:00 p.m."
+                  },
+                  {
+                    "id": "2_00_pm",
+                    "title": "2:00 p.m."
+                  },
+                  {
+                    "id": "3_00_pm",
+                    "title": "3:00 p.m."
+                  },
+                  {
+                    "id": "4_00_pm",
+                    "title": "4:00 p.m."
+                  },
+                  {
+                    "id": "5_00_pm",
+                    "title": "5:00 p.m."
+                  },
+                  {
+                    "id": "6_00_pm",
+                    "title": "6:00 p.m."
+                  },
+                  {
+                    "id": "7_00_pm",
+                    "title": "7:00 p.m."
+                  }
+                ]
+              },
+              {
+                "type": "TextArea",
+                "name": "notes",
+                "label": "Comentario",
+                "required": false
+              },
+              {
+                "type": "Footer",
+                "label": "Confirmar visita",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "customer_name": "${form.customer_name}",
+                    "phone": "${form.phone}",
+                    "visit_date": "${form.visit_date}",
+                    "visit_time": "${form.visit_time}",
+                    "notes": "${form.notes}",
+                    "source": "visit_schedule_flow"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

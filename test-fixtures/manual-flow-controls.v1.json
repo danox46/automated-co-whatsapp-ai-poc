@@ -15,10 +15,11 @@
   },
   "negativeVisit": {
     "changeOnly": { "phone": "123" },
-    "expected": {
+    "expectedBackendIfReceived": {
       "status": "invalid",
       "validationErrors": [{ "field": "phone", "code": "invalid_format" }],
       "completionAcknowledgment": false
-    }
+    },
+    "expectedClientWithPhoneLimits": { "valid": false, "submitted": false }
   }
 }
