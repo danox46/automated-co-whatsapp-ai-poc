@@ -1,6 +1,44 @@
 # Parallel Meta sandbox bot bridge
 
-The app-owned Meta test number remains on the existing MCP webhook. A separate
+## Dedicated Morning line (25 October 2026)
+
+The internal test configuration now targets Morning ARP's dedicated Cloud API
+line, not Meta's disposable test sender. The tenant, OAuth scopes, protected
+credentials and recipient allowlist are retained. The visit and wholesale
+catalog IDs refer to copies in the new messaging account; both remain drafts.
+Creation, migration and tests do not authorize publishing them or App Review.
+
+Changing configured assets is followed by the existing authenticated
+`refresh-sandbox-credential` admin operation. It verifies phone ownership,
+subscribes the app, registers allowlisted conversation references and stores
+the installation. A deployment alone does not complete the connection.
+Registry refresh removes the superseded WABA route; webhook routing also
+requires a currently connected installation matching the incoming WABA.
+Historical conversations and original send receipts remain intact. Their old
+sender references cannot borrow the new sender's reply window.
+
+For rollback, deploy this same routing-aware source with the four original
+configuration overrides, then refresh the installation and independently verify
+provider status and bridge reads. Do not roll back to older code lacking the
+routing checks or delete/reseed retained conversation data:
+
+```powershell
+node node_modules/wrangler/bin/wrangler.js deploy --config wrangler.mcp.jsonc `
+  --var META_SANDBOX_WABA_ID:934775242587261 `
+  --var META_SANDBOX_PHONE_NUMBER_ID:1319674237902829 `
+  --var META_SANDBOX_VISIT_FLOW_ID:2272570040204107 `
+  --var META_SANDBOX_WHOLESALE_FLOW_ID:1112123734847750
+./scripts/pilot-admin.ps1 refresh-sandbox-credential https://automated-co-whatsapp-mcp.danielx9.workers.dev morning-arp-sandbox
+./scripts/pilot-admin.ps1 provider-status https://automated-co-whatsapp-mcp.danielx9.workers.dev morning-arp-sandbox
+```
+
+Reconcile the local bot's mode, pending work and original outbound keys before
+either switch. Genuine inbound, reply, delivery and draft-completion receipts
+are still required for acceptance; provider account setup is not bot acceptance.
+
+## Historical Meta test-number setup
+
+The app-owned Meta test number used the existing MCP webhook. A separate
 bot may mirror its conversations through these fixed, single-tenant routes:
 
 - `GET /bot/sandbox/conversations`

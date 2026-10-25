@@ -5,6 +5,86 @@ import { createDurableOAuthState } from "../src/oauth/durableAuthorizationStore.
 import { sha256Base64Url } from "../src/meta/pilotCrypto.js";
 
 describe("pilot installation Durable Objects", () => {
+  it("switches and rolls back a sender without mixing routes, history or reply windows", async () => {
+    const registry = createPilotInstallationRegistry(env.PILOT_INSTALLATIONS);
+    const digits = crypto.randomUUID().replace(/\D/g, "").padEnd(16, "7").slice(0, 16);
+    const tenantId = `switch_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const original = {
+      tenantId, wabaId: `1${digits}`, phoneNumberId: `2${digits}`,
+      encryptedAccessToken: { ciphertext: "encrypted", iv: "nonce", version: 1 as const },
+      connectedAt: "2026-10-25T12:00:00.000Z", webhookSubscribedAt: "2026-10-25T12:00:00.000Z",
+      status: "connected" as const
+    };
+    const replacement = { ...original, wabaId: `3${digits}`, phoneNumberId: `4${digits}` };
+    await registry.refreshInstallation(original);
+    const conversations = env.CONVERSATIONS.getByName(tenantId);
+    await conversations.initializeTenant(tenantId);
+    await conversations.ingestMessage({
+      conversationRef: "conv_before_switch", providerAccountRef: original.phoneNumberId,
+      providerParticipantRef: "15550000001", messageRef: "wamid.before-switch", direction: "inbound",
+      kind: "text", text: "Retain original evidence", occurredAt: original.connectedAt, status: "received"
+    });
+
+    await registry.refreshInstallation(replacement);
+    expect(await registry.resolveTenantForWaba(original.wabaId)).toBeNull();
+    expect(await registry.resolveTenantForWaba(replacement.wabaId)).toBe(tenantId);
+    expect(await env.PILOT_INSTALLATIONS.getByName(`waba:${original.wabaId}`).getWabaRoute()).toBeNull();
+    expect(await conversations.getConversationEnforcementState("conv_before_switch"))
+      .toMatchObject({ providerAccountRef: original.phoneNumberId });
+    expect(await conversations.reserveOutboundDispatch({
+      conversationRef: "conv_before_switch", kind: "free_form_reply", idempotencyKey: "switch-reply-001",
+      requestFingerprint: await sha256Base64Url("switch-reply"), expectedPolicyRevision: "v1",
+      expectedProviderAccountRef: replacement.phoneNumberId, now: "2026-10-25T12:01:00.000Z",
+      notAfter: "2026-10-26T12:00:00.000Z"
+    })).toEqual({ status: "blocked", reason: "state_changed" });
+
+    await registry.refreshInstallation(original);
+    expect(await registry.resolveTenantForWaba(original.wabaId)).toBe(tenantId);
+    expect(await registry.resolveTenantForWaba(replacement.wabaId)).toBeNull();
+    expect(await registry.getInstallation(tenantId)).toMatchObject({ phoneNumberId: original.phoneNumberId });
+    expect(await conversations.getConversationEnforcementState("conv_before_switch")).not.toBeNull();
+  });
+
+  it("ignores stale routes when installation is missing, moved or disconnected", async () => {
+    const registry = createPilotInstallationRegistry(env.PILOT_INSTALLATIONS);
+    const digits = crypto.randomUUID().replace(/\D/g, "").padEnd(16, "8").slice(0, 16);
+    const tenantId = `stale_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const staleWaba = `5${digits}`;
+    const route = env.PILOT_INSTALLATIONS.getByName(`waba:${staleWaba}`);
+    await route.putWabaRoute(tenantId);
+    expect(await registry.resolveTenantForWaba(staleWaba)).toBeNull();
+    const installation = {
+      tenantId, wabaId: `6${digits}`, phoneNumberId: `7${digits}`,
+      encryptedAccessToken: { ciphertext: "encrypted", iv: "nonce", version: 1 as const },
+      connectedAt: "2026-10-25T12:00:00.000Z", webhookSubscribedAt: "2026-10-25T12:00:00.000Z",
+      status: "connected" as const
+    };
+    await registry.refreshInstallation(installation);
+    expect(await registry.resolveTenantForWaba(staleWaba)).toBeNull();
+    await env.PILOT_INSTALLATIONS.getByName(`tenant:${tenantId}`).markInstallationDisconnected(installation.connectedAt);
+    expect(await registry.resolveTenantForWaba(installation.wabaId)).toBeNull();
+  });
+
+  it("rejects a sender switch to another tenant's account without changing either installation", async () => {
+    const registry = createPilotInstallationRegistry(env.PILOT_INSTALLATIONS);
+    const digits = crypto.randomUUID().replace(/\D/g, "").padEnd(16, "9").slice(0, 16);
+    const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const first = {
+      tenantId: `first_${suffix}`, wabaId: `8${digits}`, phoneNumberId: `9${digits}`,
+      encryptedAccessToken: { ciphertext: "encrypted", iv: "nonce", version: 1 as const },
+      connectedAt: "2026-10-25T12:00:00.000Z", webhookSubscribedAt: "2026-10-25T12:00:00.000Z",
+      status: "connected" as const
+    };
+    const second = { ...first, tenantId: `second_${suffix}`, wabaId: `11${digits}`, phoneNumberId: `12${digits}` };
+    await registry.refreshInstallation(first);
+    await registry.refreshInstallation(second);
+    await expect(registry.refreshInstallation({ ...first, wabaId: second.wabaId, phoneNumberId: second.phoneNumberId }))
+      .rejects.toThrow("already bound to another tenant");
+    expect(await registry.getInstallation(first.tenantId)).toMatchObject({ wabaId: first.wabaId });
+    expect(await registry.resolveTenantForWaba(first.wabaId)).toBe(first.tenantId);
+    expect(await registry.resolveTenantForWaba(second.wabaId)).toBe(second.tenantId);
+  });
+
   it("consumes invitation sessions once and persists isolated tenant routing", async () => {
     const registry = createPilotInstallationRegistry(env.PILOT_INSTALLATIONS);
     const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 12);

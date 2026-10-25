@@ -373,6 +373,22 @@ export function createPilotInstallationRegistry(
   namespace: PilotInstallationNamespace,
   cohortObjectName = "cohort:closed-pilot"
 ) {
+  async function bindInstallation(installation: PilotInstallationRecord): Promise<void> {
+    const tenantStub = namespace.getByName(`tenant:${installation.tenantId}`);
+    const wabaStub = namespace.getByName(`waba:${installation.wabaId}`);
+    const previous = await tenantStub.getInstallation();
+    const targetTenant = await wabaStub.getWabaRoute();
+    if (targetTenant && targetTenant !== installation.tenantId) {
+      throw new Error("WABA is already bound to another tenant");
+    }
+    await tenantStub.putInstallation(installation);
+    await wabaStub.putWabaRoute(installation.tenantId);
+    if (previous && previous.wabaId !== installation.wabaId) {
+      const oldRoute = namespace.getByName(`waba:${previous.wabaId}`);
+      if (await oldRoute.getWabaRoute() === installation.tenantId) await oldRoute.deleteWabaRoute();
+    }
+  }
+
   return {
     async createInvite(input: {
       tenantId: string;
@@ -461,10 +477,7 @@ export function createPilotInstallationRegistry(
       installation: PilotInstallationRecord,
       completedAt = new Date()
     ): Promise<void> {
-      const tenantStub = namespace.getByName(`tenant:${installation.tenantId}`);
-      const wabaStub = namespace.getByName(`waba:${installation.wabaId}`);
-      await tenantStub.putInstallation(installation);
-      await wabaStub.putWabaRoute(installation.tenantId);
+      await bindInstallation(installation);
       await namespace.getByName(cohortObjectName)
         .markPilotSeatConnected(installation.tenantId, completedAt.toISOString());
       const inviteHash = await sha256Base64Url(rawInviteToken);
@@ -475,10 +488,7 @@ export function createPilotInstallationRegistry(
       installation: PilotInstallationRecord,
       refreshedAt = new Date()
     ): Promise<void> {
-      const tenantStub = namespace.getByName(`tenant:${installation.tenantId}`);
-      const wabaStub = namespace.getByName(`waba:${installation.wabaId}`);
-      await tenantStub.putInstallation(installation);
-      await wabaStub.putWabaRoute(installation.tenantId);
+      await bindInstallation(installation);
       await namespace.getByName(cohortObjectName)
         .markPilotSeatConnected(installation.tenantId, refreshedAt.toISOString());
     },
@@ -509,7 +519,10 @@ export function createPilotInstallationRegistry(
 
     async resolveTenantForWaba(wabaId: string): Promise<string | null> {
       validateProviderId(wabaId);
-      return namespace.getByName(`waba:${wabaId}`).getWabaRoute();
+      const tenantId = await namespace.getByName(`waba:${wabaId}`).getWabaRoute();
+      if (!tenantId) return null;
+      const installation = await namespace.getByName(`tenant:${tenantId}`).getInstallation();
+      return installation?.status === "connected" && installation.wabaId === wabaId ? tenantId : null;
     },
 
     async disconnect(tenantId: string, disconnectedAt = new Date()): Promise<PilotInstallationRecord | null> {
