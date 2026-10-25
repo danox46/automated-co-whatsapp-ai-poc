@@ -642,7 +642,7 @@ function createWhatsAppPolicyServer(
     server.registerTool("whatsapp_send_flow", {
       title: "Send a sandbox draft WhatsApp Flow",
       description: "Sends an existing visit or wholesale draft to an allowlisted sandbox conversation inside its verified 24-hour window. Does not publish a Flow. Reuse the original idempotency key after any timeout; structured submissions appear in conversation history.",
-      inputSchema: z.strictObject({ conversationRef: z.string().regex(/^conv_[A-Za-z0-9_-]{32}$/), flowType: z.enum(["visit", "wholesale"]), idempotencyKey: z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/) }),
+      inputSchema: z.strictObject({ conversationRef: z.string().regex(/^conv_[A-Za-z0-9_-]{32}$/), flowType: z.enum(["visit", "wholesale"]), idempotencyKey: z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/), text: z.string().trim().min(1).max(1024).regex(/^[^\u0000]*$/u).optional() }),
       outputSchema: z.discriminatedUnion("ok", [
         z.object({ ok: z.literal(true), messageRef: z.string(), status: z.enum(["accepted", "queued", "sent"]), flowType: z.enum(["visit", "wholesale"]) }),
         z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }) })

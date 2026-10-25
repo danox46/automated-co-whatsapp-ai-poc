@@ -32,6 +32,23 @@ async function fixture() {
 }
 
 describe("policy-enforced draft Flow dispatch", () => {
+  it("freezes the exact introduction in its original intent and durable history", async () => {
+    const f = await fixture();
+    const args = { ...f.args, text: "Soy Sol, la asistente virtual. Completa este formulario de visita." };
+    expect(await f.service.send(f.principal, args)).toMatchObject({ ok: true });
+    expect(f.sendDraftFlow).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.any(String), expect.objectContaining({ text: args.text }));
+    expect((await f.stub.getConversationHistory({ conversationRef: args.conversationRef }))?.messages.find(m => m.direction === "outbound")?.text).toBe(args.text);
+    expect(await f.service.send(f.principal, { ...args, text: "Changed introduction" })).toMatchObject({ ok: false, error: { code: "WHATSAPP_CONVERSATION_STATE_CHANGED" } });
+    expect(f.sendDraftFlow).toHaveBeenCalledTimes(1);
+  });
+  it("rejects invalid introductions before provider or reservation work", async () => {
+    const f = await fixture();
+    for (const text of [" ", "x".repeat(1025), "hidden\0text"]) {
+      expect(await f.service.send(f.principal, { ...f.args, text })).toMatchObject({ ok: false, error: { code: "WHATSAPP_FLOW_INPUT_INVALID" } });
+    }
+    expect(f.listFlows).not.toHaveBeenCalled();
+    expect(f.sendDraftFlow).not.toHaveBeenCalled();
+  });
   it("allows one provider invocation for parallel original-key calls and returns its durable receipt on replay", async () => {
     const f = await fixture();
     const results = await Promise.all([f.service.send(f.principal, f.args), f.service.send(f.principal, f.args)]);

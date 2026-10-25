@@ -45,6 +45,10 @@ describe("sandbox bot bridge", () => {
     expect(send).not.toHaveBeenCalled();
     expect((await bridge(request(path, "POST", { flowType: "visit", idempotencyKey: "original-key" })))?.status).toBe(200);
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "owner-sandbox" }), { conversationRef: ref, flowType: "visit", idempotencyKey: "original-key" });
+    for (const text of [" ", "x".repeat(1025), "hidden\0text"]) expect((await bridge(request(path, "POST", { flowType: "visit", idempotencyKey: "original-key", text })))?.status).toBe(400);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((await bridge(request(path, "POST", { flowType: "visit", idempotencyKey: "second-intent", text: "Soy Sol. Te comparto el formulario." })))?.status).toBe(200);
+    expect(send).toHaveBeenLastCalledWith(expect.anything(), { conversationRef: ref, flowType: "visit", idempotencyKey: "second-intent", text: "Soy Sol. Te comparto el formulario." });
   });
   it("rejects unauthorized reads and confines queries to the configured sandbox tenant", async () => {
     const f = fixture();

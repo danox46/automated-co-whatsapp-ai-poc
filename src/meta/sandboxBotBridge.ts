@@ -57,13 +57,14 @@ export function createSandboxBotBridge(input: {
       if (!input.flowMessaging) return Response.json({ ok: false, code: "SANDBOX_FLOW_UNAVAILABLE" }, { status: 503, headers });
       if (!request.headers.get("content-type")?.startsWith("application/json")) return Response.json({ ok: false, code: "INVALID_CONTENT_TYPE" }, { status: 415, headers });
       const bytes = await request.arrayBuffer();
-      if (bytes.byteLength > 1024) return Response.json({ ok: false, code: "FLOW_REQUEST_TOO_LARGE" }, { status: 413, headers });
+      if (bytes.byteLength > 8192) return Response.json({ ok: false, code: "FLOW_REQUEST_TOO_LARGE" }, { status: 413, headers });
       let body: unknown;
       try { body = JSON.parse(new TextDecoder().decode(bytes)); } catch { body = null; }
-      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "flowType,idempotencyKey") return Response.json({ ok: false, code: "INVALID_FLOW_REQUEST" }, { status: 400, headers });
-      const { flowType, idempotencyKey } = body as Record<string, unknown>;
+      if (!body || typeof body !== "object" || Array.isArray(body) || !["flowType,idempotencyKey", "flowType,idempotencyKey,text"].includes(Object.keys(body).sort().join(","))) return Response.json({ ok: false, code: "INVALID_FLOW_REQUEST" }, { status: 400, headers });
+      const { flowType, idempotencyKey, text } = body as Record<string, unknown>;
       if ((flowType !== "visit" && flowType !== "wholesale") || typeof idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/u.test(idempotencyKey)) return Response.json({ ok: false, code: "INVALID_FLOW_REQUEST" }, { status: 400, headers });
-      const result = await input.flowMessaging.send({ subject: "sandbox-bot-bridge", tenantId: input.sandbox.tenantId, audience: input.resource, scopes: new Set(["whatsapp.messages.send"]) }, { conversationRef: route[1], flowType, idempotencyKey });
+      if (text !== undefined && (typeof text !== "string" || !text.trim() || text.length > 1024 || text.includes("\0"))) return Response.json({ ok: false, code: "INVALID_FLOW_REQUEST" }, { status: 400, headers });
+      const result = await input.flowMessaging.send({ subject: "sandbox-bot-bridge", tenantId: input.sandbox.tenantId, audience: input.resource, scopes: new Set(["whatsapp.messages.send"]) }, { conversationRef: route[1], flowType, idempotencyKey, ...(typeof text === "string" ? { text } : {}) });
       return Response.json(result, { status: result.ok ? 200 : 409, headers });
     }
     if (route[2] === "replies" && request.method === "POST") {

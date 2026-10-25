@@ -63,10 +63,13 @@ The candidate uses the existing sandbox WABA/sender, original OAuth scope
 `whatsapp.messages.send`, tenant and recipient allowlist. It never publishes a
 Flow or accepts arbitrary Graph payloads, destinations or Flow IDs from agents.
 
-- MCP: `whatsapp_send_flow({ conversationRef, flowType, idempotencyKey })`.
+- MCP: `whatsapp_send_flow({ conversationRef, flowType, idempotencyKey, text? })`.
 - Bridge: `POST /bot/sandbox/conversations/{conversationRef}/flows` with
   `{ "flowType": "visit", "idempotencyKey": "original-intent-key" }`.
 - `flowType` is `visit` or `wholesale`; IDs are server-owned configuration.
+- Optional `text` is a 1–1024 character introduction, frozen into the original
+  intent and stored exactly as dispatched. It cannot change recipient, Flow
+  ID, screen, mode or CTA. Omission uses the server's existing default text.
 - The tool registers only when the sandbox Flow service is configured. It uses
   the existing write scope; normal account authorization still applies.
 - The server verifies the selected named draft belongs to the connected WABA,

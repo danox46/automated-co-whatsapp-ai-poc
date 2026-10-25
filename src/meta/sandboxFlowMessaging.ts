@@ -8,7 +8,7 @@ import { decryptPilotSecret, sha256Base64Url } from "./pilotCrypto.js";
 import { flowToken, type SandboxFlowKind } from "./flowResponses.js";
 import type { WhatsAppSandboxConfig } from "./sandboxConfig.js";
 
-export type DraftFlowSendInput = { conversationRef: string; flowType: SandboxFlowKind; idempotencyKey: string };
+export type DraftFlowSendInput = { conversationRef: string; flowType: SandboxFlowKind; idempotencyKey: string; text?: string };
 export type DraftFlowSendResult =
   | { ok: true; messageRef: string; status: "accepted" | "queued" | "sent"; flowType: SandboxFlowKind }
   | { ok: false; error: { code: string; message: string; retryable: boolean } };
@@ -37,9 +37,11 @@ export function createSandboxFlowMessaging(input: {
     const flowId = input.flowIds[args.flowType];
     if (principal.tenantId !== input.sandbox.tenantId || !form || !flowId || !/^\d{3,32}$/u.test(flowId)) return failure("WHATSAPP_FLOW_NOT_AVAILABLE", "That draft Flow is not configured for this sandbox.");
     if (!/^conv_[A-Za-z0-9_-]{32}$/u.test(args.conversationRef) || !/^[A-Za-z0-9._:-]{8,128}$/u.test(args.idempotencyKey)) return failure("WHATSAPP_FLOW_INPUT_INVALID", "Use the original conversation reference and an 8–128 character intent key.");
+    if (args.text !== undefined && (typeof args.text !== "string" || !args.text.trim() || args.text.length > 1024 || args.text.includes("\0"))) return failure("WHATSAPP_FLOW_INPUT_INVALID", "A Flow introduction must contain 1–1024 characters and no NUL characters.");
+    const text = args.text?.trim() ?? form.text;
     const stub = input.conversations.getByName(principal.tenantId);
     await stub.initializeTenant(principal.tenantId);
-    const fingerprint = await sha256Base64Url(JSON.stringify({ kind: "draft_flow", conversationRef: args.conversationRef, flowType: args.flowType, flowId, ...form }));
+    const fingerprint = await sha256Base64Url(JSON.stringify({ kind: "draft_flow", conversationRef: args.conversationRef, flowType: args.flowType, flowId, ...form, text }));
     const previous = await stub.getOutboundDispatchResult({ idempotencyKey: args.idempotencyKey, requestFingerprint: fingerprint });
     if (previous?.status === "duplicate") return { ok: true, messageRef: previous.messageRef, status: previous.providerStatus, flowType: args.flowType };
     if (previous) return failure(previous.reason === "in_progress" ? "WHATSAPP_SEND_IN_PROGRESS" : "WHATSAPP_CONVERSATION_STATE_CHANGED", "The original intent is reserved or differs from this request. Reconcile it; do not create a replacement key.");
@@ -83,10 +85,10 @@ export function createSandboxFlowMessaging(input: {
       return failure("WHATSAPP_CUSTOMER_SERVICE_WINDOW_CLOSED", "The 24-hour window closed before dispatch. No provider send was initiated.");
     }
     try {
-      const result = await input.graph.sendDraftFlow(accessToken, reservation.providerAccountRef, reservation.providerParticipantRef, { flowId, screen: form.screen, token, text: form.text, cta: form.cta });
+      const result = await input.graph.sendDraftFlow(accessToken, reservation.providerAccountRef, reservation.providerParticipantRef, { flowId, screen: form.screen, token, text, cta: form.cta });
       await stub.completeOutboundDispatch({ idempotencyKey: args.idempotencyKey, requestFingerprint: fingerprint, conversationRef: args.conversationRef,
         providerAccountRef: reservation.providerAccountRef, providerParticipantRef: reservation.providerParticipantRef, messageRef: result.messageRef,
-        providerStatus: result.status, kind: "interactive", text: form.text, occurredAt: now().toISOString() });
+        providerStatus: result.status, kind: "interactive", text, occurredAt: now().toISOString() });
       await stub.bindFlowLaunchMessage({ tokenHash, conversationRef: args.conversationRef, messageRef: result.messageRef });
       return { ok: true, ...result, flowType: args.flowType };
     } catch (error) {
