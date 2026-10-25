@@ -50,6 +50,7 @@ import { createSandboxFlowAdmin } from "../meta/sandboxFlowAdmin.js";
 import { createSandboxFlowMessaging } from "../meta/sandboxFlowMessaging.js";
 import { opaqueConversationRef } from "../meta/conversationEvents.js";
 import { opaqueInstallationRef } from "../meta/installationIdentity.js";
+import { nativeBotOAuthClient } from "../oauth/nativeBotClient.js";
 import {
   readWhatsAppSandboxConfig,
   sandboxRecipientAllowed,
@@ -77,6 +78,7 @@ export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & WhatsAppSandboxEnv & 
   OAUTH_SIGNING_PUBLIC_JWK?: string;
   OAUTH_CLIENT_ID?: string;
   OAUTH_REDIRECT_URI?: string;
+  BOT_OAUTH_REDIRECT_URI?: string;
   CONVERSATION_MESSAGE_RETENTION_DAYS?: string;
   CONVERSATION_INACTIVE_RETENTION_DAYS?: string;
   CONVERSATION_PENDING_STATUS_RETENTION_DAYS?: string;
@@ -168,6 +170,8 @@ export function createPersistentWhatsAppWorker(
       let resource = safePublicOrigin(env.PUBLIC_ORIGIN);
       if (oauthConfigured && resource) {
         const signingKey = parseSigningKey(env);
+        const nativeClient = nativeBotOAuthClient(env.BOT_OAUTH_REDIRECT_URI);
+        if (nativeClient?.clientId === env.OAUTH_CLIENT_ID) throw new Error("Native and ChatGPT OAuth registrations must remain distinct");
         const authorizationServer = createWhatsAppAuthorizationServer({
           issuer: resource,
           resource,
@@ -175,7 +179,7 @@ export function createPersistentWhatsAppWorker(
           clients: createStaticOAuthClientRegistry([{
             clientId: env.OAUTH_CLIENT_ID ?? "https://chatgpt.com/oauth/client.json",
             redirectUris: [env.OAUTH_REDIRECT_URI ?? "https://chatgpt.com/connector_platform_oauth_redirect"]
-          }]),
+          }, ...(nativeClient ? [nativeClient] : [])]),
           store: oauthState.store,
           resolveSession: async (authorizationRequest) => {
             const rawSession = readCookie(authorizationRequest, PILOT_SESSION_COOKIE);

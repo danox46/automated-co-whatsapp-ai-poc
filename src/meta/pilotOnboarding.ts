@@ -1,6 +1,7 @@
 import { createMetaGraphClient, MetaGraphError } from "./graphClient.js";
 import { createPilotInstallationRegistry } from "./pilotInstallationStore.js";
 import { pilotAccountProfileCommandSchema } from "./pilotAccountProfile.js";
+import { opaqueInstallationRef } from "./installationIdentity.js";
 import {
   decryptPilotSecret,
   encryptPilotSecret,
@@ -25,6 +26,7 @@ export type PilotOnboardingEnv = {
   INSTALLATION_ENCRYPTION_KEY: string;
   PILOT_ADMIN_TOKEN: string;
   PUBLIC_ORIGIN: string;
+  CONVERSATION_REF_SECRET?: string;
 };
 
 export type PilotOnboardingDependencies = {
@@ -388,7 +390,12 @@ export function createPilotOnboardingHandler(
     if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
     const installation = await dependencies.registry.getInstallation(tenantId);
     if (!installation) return jsonError("PILOT_INSTALLATION_NOT_FOUND", "No installation exists for this pilot tenant.", 404);
-    return Response.json({ ok: true, installation: dependencies.registry.sanitize(installation) }, {
+    return Response.json({ ok: true, installation: {
+      ...dependencies.registry.sanitize(installation),
+      ...(env.CONVERSATION_REF_SECRET ? { installationRef: await opaqueInstallationRef(
+        installation.tenantId, installation.wabaId, installation.phoneNumberId, env.CONVERSATION_REF_SECRET
+      ) } : {})
+    } }, {
       headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" })
     });
   }
