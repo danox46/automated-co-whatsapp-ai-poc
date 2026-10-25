@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "purpose": "Owner-operated draft-form QA. These values are form data only, never outbound recipients or real customer requests.",
+  "visit": {
+    "customer_name": "Prueba Morning",
+    "phone": "3000000000",
+    "visit_date": "2026-11-02",
+    "visit_time": "10_00_am",
+    "notes": "MVP-QA-v1"
+  },
+  "wholesale": {
+    "city": "Bogotá",
+    "budget_range": "200_500",
+    "selling_status": "both"
+  },
+  "negativeVisit": {
+    "changeOnly": { "phone": "123" },
+    "expected": {
+      "status": "invalid",
+      "validationErrors": [{ "field": "phone", "code": "invalid_format" }],
+      "completionAcknowledgment": false
+    }
+  }
+}
