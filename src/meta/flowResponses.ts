@@ -22,14 +22,26 @@ export const flowFormSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("wholesale"), answers: wholesaleAnswersSchema }).strict()
 ]);
 export type FlowForm = z.infer<typeof flowFormSchema>;
+export const flowValidationErrorsSchema = z.array(z.object({
+  field: z.enum(["response", "token", "source", "customer_name", "phone", "visit_date", "visit_time", "notes", "city", "budget_range", "selling_status"]),
+  code: z.enum(["required", "invalid_type", "invalid_format", "too_short", "too_long", "unsupported_value", "unsupported_field", "malformed", "too_large"])
+}).strict()).min(1).max(12);
+export type FlowValidationError = z.infer<typeof flowValidationErrorsSchema>[number];
 export const flowSubmissionSchema = z.union([
   z.object({ status: z.literal("completed"), form: flowFormSchema }).strict(),
-  z.object({ status: z.enum(["invalid", "unmatched", "duplicate"]) }).strict()
+  z.object({ status: z.literal("invalid"), validationErrors: flowValidationErrorsSchema.optional() }).strict(),
+  z.object({ status: z.enum(["unmatched", "duplicate"]) }).strict()
 ]);
 export type StoredFlowSubmission = z.infer<typeof flowSubmissionSchema>;
 
 /** Internal-only correlation candidate. Never include the raw token/JSON. */
-export type FlowReplyCandidate = { tokenHash?: string; contextMessageRef?: string; form?: FlowForm };
+export type FlowReplyCandidate = { tokenHash?: string; contextMessageRef?: string; form?: FlowForm; validationErrors?: FlowValidationError[] };
+
+/** Only closed-vocabulary diagnostics cross storage/API boundaries, never Zod messages or rejected values. */
+export function invalidFlowSubmission(candidate: FlowReplyCandidate): StoredFlowSubmission {
+  const errors = flowValidationErrorsSchema.safeParse(candidate.validationErrors);
+  return { status: "invalid", ...(errors.success ? { validationErrors: errors.data } : {}) };
+}
 export type InternalFlowLaunch = {
   tokenHash: string;
   conversationRef: string;
@@ -48,26 +60,47 @@ export async function flowToken(secret: string, tenantId: string, conversationRe
   return `flow_${btoa(String.fromCharCode(...signature)).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/gu, "")}`;
 }
 
-/** Return undefined for non-Flow messages; an empty candidate records invalid Flow input. */
+/** Return undefined for non-Flow messages; rejected input retains only bounded value-free diagnostics. */
 export async function parseFlowReply(message: Record<string, unknown>): Promise<FlowReplyCandidate | undefined> {
   const interactive = record(message.interactive);
   if (message.type !== "interactive" || interactive?.type !== "nfm_reply") return undefined;
   const encoded = record(interactive.nfm_reply)?.response_json;
-  if (typeof encoded !== "string" || new TextEncoder().encode(encoded).byteLength > 8192) return {};
+  if (typeof encoded !== "string") return { validationErrors: [{ field: "response", code: "invalid_type" }] };
+  if (new TextEncoder().encode(encoded).byteLength > 8192) return { validationErrors: [{ field: "response", code: "too_large" }] };
   let parsed: Record<string, unknown> | undefined;
-  try { parsed = record(JSON.parse(encoded)); } catch { return {}; }
-  if (!parsed) return {};
+  try { parsed = record(JSON.parse(encoded)); } catch { return { validationErrors: [{ field: "response", code: "malformed" }] }; }
+  if (!parsed) return { validationErrors: [{ field: "response", code: "invalid_type" }] };
   const { flow_token: token, source, ...answers } = parsed;
   const candidate: FlowReplyCandidate = {};
+  const errors: FlowValidationError[] = [];
   if (typeof token === "string" && /^flow_[A-Za-z0-9_-]{43}$/u.test(token)) candidate.tokenHash = await sha256Base64Url(token);
+  else errors.push({ field: "token", code: token === undefined ? "required" : "invalid_format" });
   const context = record(message.context)?.id;
   if (typeof context === "string" && context.length > 0 && context.length <= 512) candidate.contextMessageRef = context;
   const kind = source === "visit_schedule_flow" ? "visit" : source === "wholesale_flow" ? "wholesale" : undefined;
+  if (!kind) {
+    errors.push({ field: "source", code: source === undefined ? "required" : "unsupported_value" });
+    candidate.validationErrors = errors;
+    return candidate;
+  }
   // Optional form fields may arrive as null. Normalize internally, keeping the
   // advertised MCP JSON Schema free of non-serializable Zod transforms.
   if (kind === "visit" && answers.notes === null) delete answers.notes;
   const validated = flowFormSchema.safeParse({ kind, answers });
   if (validated.success) candidate.form = validated.data;
+  else {
+    const fields = new Set(["customer_name", "phone", "visit_date", "visit_time", "notes", "city", "budget_range", "selling_status"]);
+    for (const issue of validated.error.issues) {
+      const name = issue.path[0] === "answers" && typeof issue.path[1] === "string" && fields.has(issue.path[1]) ? issue.path[1] : "response";
+      const field = name as FlowValidationError["field"];
+      const code: FlowValidationError["code"] = issue.code === "unrecognized_keys" ? "unsupported_field"
+        : issue.code === "too_small" ? "too_short" : issue.code === "too_big" ? "too_long"
+        : issue.code === "invalid_value" ? "unsupported_value"
+        : issue.code === "invalid_type" ? (answers[name] === undefined ? "required" : "invalid_type") : "invalid_format";
+      if (!errors.some(error => error.field === field && error.code === code)) errors.push({ field, code });
+    }
+  }
+  if (errors.length) candidate.validationErrors = errors.slice(0, 12);
   return candidate;
 }
 

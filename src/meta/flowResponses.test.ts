@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flowToken, parseFlowReply } from "./flowResponses.js";
+import { flowToken, parseFlowReply, flowSubmissionSchema, invalidFlowSubmission } from "./flowResponses.js";
 import { sha256Base64Url } from "./pilotCrypto.js";
 
 const token = `flow_${"a".repeat(43)}`;
@@ -38,8 +38,32 @@ describe("bounded Flow reply normalization", () => {
   }
   it("records malformed/oversize nfm replies as invalid candidates and leaves ordinary messages alone", async () => {
     expect(await parseFlowReply({ type: "text", text: { body: "hello" } })).toBeUndefined();
-    expect(await parseFlowReply({ type: "interactive", interactive: { type: "nfm_reply", nfm_reply: { response_json: "{" } } })).toEqual({});
-    expect(await parseFlowReply(reply({ ...visit, notes: "x".repeat(9000) }))).toEqual({});
+    expect(await parseFlowReply({ type: "interactive", interactive: { type: "nfm_reply", nfm_reply: { response_json: "{" } } })).toEqual({ validationErrors: [{ field: "response", code: "malformed" }] });
+    expect(await parseFlowReply(reply({ ...visit, notes: "x".repeat(9000) }))).toEqual({ validationErrors: [{ field: "response", code: "too_large" }] });
+  });
+  it.each([
+    [{ ...visit, phone: "123" }, "phone", "invalid_format"],
+    [{ ...visit, customer_name: "" }, "customer_name", "too_short"],
+    [{ ...visit, visit_date: "2026-02-30" }, "visit_date", "invalid_format"],
+    [{ ...visit, visit_time: "private-rejected-value" }, "visit_time", "unsupported_value"],
+    [{ ...visit, notes: "x".repeat(2001) }, "notes", "too_long"],
+    [{ ...visit, phone: undefined }, "phone", "required"],
+    [{ ...visit, source: "private-rejected-value" }, "source", "unsupported_value"],
+    [{ ...visit, flow_token: "private-rejected-value" }, "token", "invalid_format"],
+    [{ ...visit, private_rejected_key: "private-rejected-value" }, "response", "unsupported_field"]
+  ])("retains the actionable field/reason without the rejected value or field name", async (payload, field, code) => {
+    const candidate = await parseFlowReply(reply(payload));
+    const stored = invalidFlowSubmission(candidate!);
+    expect(stored).toMatchObject({ status: "invalid", validationErrors: expect.arrayContaining([{ field, code }]) });
+    expect(JSON.stringify(stored)).not.toContain("private-rejected");
+    expect(JSON.stringify(stored)).not.toContain(token);
+    expect(flowSubmissionSchema.parse(stored)).toEqual(stored);
+  });
+  it("keeps old invalid receipts compatible and strips untrusted diagnostic content", () => {
+    expect(flowSubmissionSchema.parse({ status: "invalid" })).toEqual({ status: "invalid" });
+    expect(invalidFlowSubmission({ validationErrors: [{ field: "phone", code: "private-rejected-value" }] } as never)).toEqual({ status: "invalid" });
+    expect(invalidFlowSubmission({ validationErrors: [{ field: "phone", code: "invalid_format", value: "private-rejected-value" }] } as never)).toEqual({ status: "invalid" });
+    expect(flowSubmissionSchema.safeParse({ status: "invalid", validationErrors: Array.from({length: 13}, () => ({ field: "phone", code: "invalid_format" })) }).success).toBe(false);
   });
   it("derives repeatable secret-bound tokens that vary by tenant, conversation and original intent", async () => {
     const original = await flowToken("synthetic-secret", "tenant-a", "conv-a", "key-a");

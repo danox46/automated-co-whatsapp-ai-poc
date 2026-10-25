@@ -63,10 +63,23 @@ describe("durable Flow completion correlation", () => {
     await f.receive("valid-after-rejections");
     const history = await f.stub.getConversationHistory({ conversationRef: f.conversationRef });
     expect(history?.messages.find(m => m.messageRef === "wrong-context")?.flowSubmission).toEqual({ status: "unmatched" });
-    expect(history?.messages.find(m => m.messageRef === "invalid-fields")?.flowSubmission).toEqual({ status: "invalid" });
+    expect(history?.messages.find(m => m.messageRef === "invalid-fields")?.flowSubmission).toEqual({ status: "invalid", validationErrors: [{ field: "response", code: "unsupported_field" }] });
     expect(history?.messages.find(m => m.messageRef === "expired")?.flowSubmission).toEqual({ status: "unmatched" });
     expect(history?.messages.find(m => m.messageRef === "valid-after-rejections")?.flowSubmission).toMatchObject({ status: "completed" });
     expect(JSON.stringify(history)).not.toContain("not stored");
+  });
+  it("keeps the original invalid receipt and permits a later valid response without consuming the launch", async () => {
+    const f = await fixture();
+    await f.receive("invalid-phone-response", { phone: "123" });
+    await f.receive("invalid-phone-response", { phone: "+15550000001" });
+    const reopened = env.CONVERSATIONS.getByName(f.tenantId);
+    const rejected = (await reopened.getConversationHistory({ conversationRef: f.conversationRef }))?.messages.find(m => m.messageRef === "invalid-phone-response");
+    expect(rejected?.flowSubmission).toEqual({ status: "invalid", validationErrors: [{ field: "phone", code: "invalid_format" }] });
+    expect(JSON.stringify(rejected)).not.toContain('"phone":"123"');
+    await f.receive("corrected-response");
+    const history = await reopened.getConversationHistory({ conversationRef: f.conversationRef });
+    expect(history?.messages.filter(m => m.messageRef === "invalid-phone-response")).toHaveLength(1);
+    expect(history?.messages.find(m => m.messageRef === "corrected-response")?.flowSubmission).toMatchObject({ status: "completed", form: { kind: "visit" } });
   });
   for (const operation of ["conversation", "tenant", "prune", "retention"] as const) {
     it(`removes Flow answers and correlation data on ${operation} cleanup`, async () => {

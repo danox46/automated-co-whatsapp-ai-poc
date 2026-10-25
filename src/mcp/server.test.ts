@@ -67,6 +67,21 @@ function closedWindowMessaging(): WhatsAppMessagingCapability {
 }
 
 describe("protected WhatsApp MCP handler", () => {
+  it("exposes value-free Flow rejection feedback through the actual SDK history schema", async () => {
+    const store = new InMemoryWhatsAppConversationStore(() => new Date("2026-10-25T12:00:00Z"));
+    await store.ingestMessage({ tenantId: "tenant_1", providerAccountRef: "internal-account", providerParticipantRef: "internal-recipient", conversationRef: "conv_validation_test", messageRef: "rejected-form", direction: "inbound", kind: "interactive", occurredAt: "2026-10-25T11:59:00.000Z", status: "received", flowReply: { validationErrors: [{ field: "phone", code: "invalid_format" }] } });
+    const handler = createAuthorizedHandler(undefined, store);
+    const client = new Client({ name: "flow-diagnostic-schema-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), {
+        requestInit: { headers: { Authorization: "Bearer valid-test-token" } }, fetch: (url, init) => handler.fetch(new Request(url, init))
+      }));
+      const result = await client.callTool({ name: "whatsapp_get_conversation_history", arguments: { conversationRef: "conv_validation_test" } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ messages: [{ flowSubmission: { status: "invalid", validationErrors: [{ field: "phone", code: "invalid_format" }] } }] });
+      expect(JSON.stringify(result)).not.toContain("internal-recipient");
+    } finally { await client.close(); }
+  });
   it("preserves normalized provider refusal fields through the actual SDK output schemas", async () => {
     const diagnostics = { providerErrorCode: "META_MESSAGE_DISPATCH_FAILED_131042", providerHttpStatus: 400 };
     const messaging = closedWindowMessaging();

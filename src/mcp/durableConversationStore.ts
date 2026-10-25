@@ -1,5 +1,5 @@
 import { DurableObject, type DurableObjectState } from "cloudflare:workers";
-import { flowFormSchema, flowKindSchema, flowSubmissionSchema, type InternalFlowLaunch, type StoredFlowSubmission } from "../meta/flowResponses.js";
+import { flowFormSchema, flowKindSchema, flowSubmissionSchema, invalidFlowSubmission, type InternalFlowLaunch, type StoredFlowSubmission } from "../meta/flowResponses.js";
 import {
   boundedLimit,
   decodeCursor,
@@ -611,7 +611,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   private resolveFlowReply(message: Omit<InternalConversationMessage, "tenantId">): StoredFlowSubmission {
     const candidate = message.flowReply!;
     const form = flowFormSchema.safeParse(candidate.form);
-    if (message.direction !== "inbound" || message.kind !== "interactive" || !candidate.tokenHash || !/^[A-Za-z0-9_-]{43}$/u.test(candidate.tokenHash) || !form.success) return { status: "invalid" };
+    if (message.direction !== "inbound" || message.kind !== "interactive" || !candidate.tokenHash || !/^[A-Za-z0-9_-]{43}$/u.test(candidate.tokenHash) || !form.success) return invalidFlowSubmission(candidate);
     const launch = this.ctx.storage.sql.exec<{
       conversation_ref: string; flow_kind: string; created_at: string; expires_at: string;
       launch_message_ref: string | null; completion_message_ref: string | null;

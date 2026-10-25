@@ -73,6 +73,23 @@ function contextFor(database: DatabaseSyncType): TestDurableObjectState {
 }
 
 describeWithSqlite("SQLite-backed conversation Durable Object", () => {
+  it("persists bounded rejection diagnostics across reconstruction without rejected answers", async () => {
+    if (!sqliteModule) throw new Error("node:sqlite unavailable");
+    const db = new sqliteModule.DatabaseSync(":memory:");
+    const ctx = contextFor(db);
+    const store = new ConversationObject(ctx, {});
+    await store.initializeTenant("flow-invalid-test");
+    const flowReply = { validationErrors: [{ field: "phone" as const, code: "invalid_format" as const }] };
+    await store.ingestMessage({ conversationRef: "conv-invalid", providerAccountRef: "15550000002", providerParticipantRef: "15550000001", messageRef: "invalid-response", direction: "inbound", kind: "interactive", occurredAt: "2026-10-25T01:02:00.000Z", status: "received", flowReply });
+    const reopened = new ConversationObject(ctx, {});
+    await reopened.initializeTenant("flow-invalid-test");
+    const messages = (await reopened.getConversationHistory({ conversationRef: "conv-invalid" }))!.messages;
+    expect(messages[0].flowSubmission).toEqual({ status: "invalid", validationErrors: flowReply.validationErrors });
+    expect(JSON.stringify(messages)).not.toContain("response_json");
+    expect(await reopened.deleteConversationData("conv-invalid")).toMatchObject({ messagesDeleted: 1 });
+    expect(await reopened.getConversationHistory({ conversationRef: "conv-invalid" })).toBeNull();
+    db.close();
+  });
   it("reopens persisted Flow answers and correlation after reconstructing the Durable Object", async () => {
     if (!sqliteModule) throw new Error("node:sqlite unavailable");
     const db = new sqliteModule.DatabaseSync(":memory:");
