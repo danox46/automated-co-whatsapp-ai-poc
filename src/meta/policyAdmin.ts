@@ -25,11 +25,19 @@ export function createWhatsAppPolicyAdminHandler(input: {
       const policy = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/policy$/u.exec(url.pathname);
       const conversations = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations$/u.exec(url.pathname);
       const history = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/history$/u.exec(url.pathname);
+      const dispatches = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/dispatches$/u.exec(url.pathname);
       const attachmentCapture = /^\/admin\/pilot\/tenants\/([a-z0-9][a-z0-9_-]{2,63})\/conversations\/([A-Za-z0-9_-]{8,200})\/attachments\/(att_[A-Za-z0-9_-]{32})\/capture$/u.exec(url.pathname);
-      if (!template && !consent && !policy && !conversations && !history && !attachmentCapture) return null;
+      if (!template && !consent && !policy && !conversations && !history && !dispatches && !attachmentCapture) return null;
       if (!await isAdmin(request, input.adminToken)) return unauthorized();
       if (conversations && request.method === "GET") return listConversations(conversations[1]);
       if (history && request.method === "GET") return getConversationHistory(history[1], history[2], url);
+      if (dispatches && request.method === "GET") {
+        const stub = await initializedTenant(dispatches[1]);
+        if (!await stub.getConversationEnforcementState(dispatches[2])) {
+          return jsonError("PILOT_CONVERSATION_NOT_FOUND", "The tenant-scoped conversation is unavailable.", 404);
+        }
+        return json({ ok: true, dispatches: await stub.listOutboundDispatchReceipts(dispatches[2]) });
+      }
       if (attachmentCapture && request.method === "POST") {
         return captureAttachment(attachmentCapture[1], attachmentCapture[2], attachmentCapture[3]);
       }

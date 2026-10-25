@@ -5,6 +5,43 @@ import { createDurableOAuthState } from "../src/oauth/durableAuthorizationStore.
 import { sha256Base64Url } from "../src/meta/pilotCrypto.js";
 
 describe("pilot installation Durable Objects", () => {
+  it("reads bounded original dispatch receipts only through the tenant-scoped admin route", async () => {
+    const tenantId = `receipts_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const stub = env.CONVERSATIONS.getByName(tenantId);
+    await stub.initializeTenant(tenantId);
+    await stub.ingestMessage({
+      conversationRef: "conv_receipt_lookup", providerAccountRef: "15550000002",
+      providerParticipantRef: "15550000001", messageRef: "wamid.receipt-input", direction: "inbound",
+      kind: "text", text: "Private message text", occurredAt: "2026-10-25T12:00:00.000Z", status: "received"
+    });
+    const fingerprint = await sha256Base64Url("private-fingerprint");
+    for (let index = 0; index < 21; index++) {
+      await stub.reserveOutboundDispatch({
+        conversationRef: "conv_receipt_lookup", kind: "free_form_reply", idempotencyKey: `receipt-key-${index}`,
+        requestFingerprint: fingerprint, expectedPolicyRevision: "v1", expectedProviderAccountRef: "15550000002",
+        now: `2026-10-25T12:00:${String(index).padStart(2, "0")}.000Z`, notAfter: "2026-10-26T12:00:00.000Z"
+      });
+    }
+    const url = `https://pilot.test/admin/pilot/tenants/${tenantId}/conversations/conv_receipt_lookup/dispatches`;
+    expect((await exports.default.fetch(new Request(url))).status).toBe(401);
+    const request = (target: string, method = "GET") => new Request(target, {
+      method, headers: { Authorization: "Bearer test-pilot-admin-token" }
+    });
+    const response = await exports.default.fetch(request(url));
+    expect(response.status).toBe(200);
+    const body = await response.json() as { dispatches: Array<Record<string, unknown>> };
+    expect(body.dispatches).toHaveLength(20);
+    expect(body.dispatches[0]).toEqual({
+      idempotencyKey: "receipt-key-20", kind: "free_form_reply", status: "reserved", reservedAt: "2026-10-25T12:00:20.000Z"
+    });
+    expect(JSON.stringify(body)).not.toMatch(/Private message text|1555000000|requestFingerprint/);
+    expect(body.dispatches.some(row => row.idempotencyKey === "receipt-key-0")).toBe(false);
+    expect((await exports.default.fetch(request(url.replace(tenantId, `other_${tenantId}`)))).status).toBe(404);
+    expect((await exports.default.fetch(request(url, "POST"))).status).toBe(405);
+    expect(await stub.getOutboundDispatchResult({ idempotencyKey: "receipt-key-20", requestFingerprint: fingerprint }))
+      .toEqual({ status: "blocked", reason: "in_progress" });
+  });
+
   it("switches and rolls back a sender without mixing routes, history or reply windows", async () => {
     const registry = createPilotInstallationRegistry(env.PILOT_INSTALLATIONS);
     const digits = crypto.randomUUID().replace(/\D/g, "").padEnd(16, "7").slice(0, 16);

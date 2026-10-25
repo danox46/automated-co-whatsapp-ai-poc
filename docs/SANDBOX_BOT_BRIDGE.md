@@ -36,6 +36,14 @@ Reconcile the local bot's mode, pending work and original outbound keys before
 either switch. Genuine inbound, reply, delivery and draft-completion receipts
 are still required for acceptance; provider account setup is not bot acceptance.
 
+For an uncertain send, the existing owner admin credential can read at most the
+latest 20 dispatch receipts for one exact tenant/conversation:
+`pilot-admin.ps1 dispatches <origin> <tenant> <conversationRef>`. This read-only
+route returns original keys and reservation/completion state, without message
+text or credentials. `reserved` means the outcome remains unconfirmed; elapsed
+time, empty history or a separate billing warning is not proof of rejection.
+Never turn this diagnostic into a resend, replacement key or direct database edit.
+
 ## Historical Meta test-number setup
 
 The app-owned Meta test number used the existing MCP webhook. A separate

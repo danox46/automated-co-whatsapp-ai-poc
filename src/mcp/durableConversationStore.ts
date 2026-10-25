@@ -127,6 +127,7 @@ export type DurableConversationObjectStub = {
   ): Promise<InternalConversationEnforcementState | null>;
   reserveOutboundDispatch(input: OutboundDispatchReservation): Promise<OutboundDispatchReservationResult>;
   getOutboundDispatchResult(input: { idempotencyKey: string; requestFingerprint: string }): Promise<Exclude<OutboundDispatchReservationResult, { status: "ready" }> | null>;
+  listOutboundDispatchReceipts(conversationRef: string): Promise<OutboundDispatchReceipt[]>;
   cancelUnsentOutboundDispatch(input: { idempotencyKey: string; requestFingerprint: string }): Promise<void>;
   completeOutboundDispatch(input: OutboundDispatchCompletion): Promise<void>;
   registerFlowLaunch(input: InternalFlowLaunch): Promise<void>;
@@ -175,6 +176,16 @@ export type OutboundDispatchReservationResult =
   | { status: "ready"; providerAccountRef: string; providerParticipantRef: string }
   | { status: "duplicate"; messageRef: string; providerStatus: "accepted" | "queued" | "sent" }
   | { status: "blocked"; reason: "state_changed" | "recipient_opted_out" | "automation_paused" | "window_closed" | "in_progress" | "template_unavailable" | "template_consent_required" };
+
+export type OutboundDispatchReceipt = {
+  idempotencyKey: string;
+  kind: string;
+  status: "reserved" | "sent";
+  reservedAt: string;
+  completedAt?: string;
+  messageRef?: string;
+  providerStatus?: string;
+};
 
 export type OutboundDispatchCompletion = {
   idempotencyKey: string;
@@ -841,6 +852,22 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   async getOutboundDispatchResult(input: { idempotencyKey: string; requestFingerprint: string }) {
     this.assertInitialized();
     return this.readOutboundDispatchResult(input);
+  }
+
+  /** Owner diagnostics only: no message text, credentials or provider account identifiers. */
+  async listOutboundDispatchReceipts(conversationRef: string): Promise<OutboundDispatchReceipt[]> {
+    this.assertInitialized();
+    return this.ctx.storage.sql.exec<{
+      idempotency_key: string; kind: string; status: "reserved" | "sent"; reserved_at: string;
+      completed_at: string | null; message_ref: string | null; provider_status: string | null;
+    }>(`SELECT idempotency_key, kind, status, reserved_at, completed_at, message_ref, provider_status
+        FROM outbound_dispatches WHERE conversation_ref = ? ORDER BY reserved_at DESC LIMIT 20`, conversationRef)
+      .toArray().map(row => ({
+        idempotencyKey: row.idempotency_key, kind: row.kind, status: row.status, reservedAt: row.reserved_at,
+        ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+        ...(row.message_ref ? { messageRef: row.message_ref } : {}),
+        ...(row.provider_status ? { providerStatus: row.provider_status } : {})
+      }));
   }
 
   /** Only the holder of a ready reservation may cancel, and only before provider I/O. */
