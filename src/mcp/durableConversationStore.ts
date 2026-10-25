@@ -1,4 +1,5 @@
 import { DurableObject, type DurableObjectState } from "cloudflare:workers";
+import { flowFormSchema, flowKindSchema, flowSubmissionSchema, type InternalFlowLaunch, type StoredFlowSubmission } from "../meta/flowResponses.js";
 import {
   boundedLimit,
   decodeCursor,
@@ -60,6 +61,7 @@ type MessageRow = {
   kind: StoredConversationMessage["kind"];
   body_text: string | null;
   template_name: string | null;
+  flow_submission_json?: string | null;
   attachment_ref: string | null;
   attachment_kind: InternalStoredAttachment["kind"] | null;
   attachment_mime_type: string | null;
@@ -127,6 +129,8 @@ export type DurableConversationObjectStub = {
   getOutboundDispatchResult(input: { idempotencyKey: string; requestFingerprint: string }): Promise<Exclude<OutboundDispatchReservationResult, { status: "ready" }> | null>;
   cancelUnsentOutboundDispatch(input: { idempotencyKey: string; requestFingerprint: string }): Promise<void>;
   completeOutboundDispatch(input: OutboundDispatchCompletion): Promise<void>;
+  registerFlowLaunch(input: InternalFlowLaunch): Promise<void>;
+  bindFlowLaunchMessage(input: { tokenHash: string; conversationRef: string; messageRef: string }): Promise<void>;
   getOutboundPolicy(conversationRef: string): Promise<{
     approvedTemplates: Array<{ name: string; category: string; purpose: string; languageCode?: string; enabled: boolean }>;
     consentedTemplateCategories: string[];
@@ -180,7 +184,7 @@ export type OutboundDispatchCompletion = {
   providerParticipantRef: string;
   messageRef: string;
   providerStatus: "accepted" | "queued" | "sent";
-  kind: "text" | "template";
+  kind: "text" | "template" | "interactive";
   text?: string;
   templateName?: string;
   occurredAt: string;
@@ -251,6 +255,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     const pendingStatusCutoff = daysBefore(nowMs, policy.pendingStatusRetentionDays);
 
     const { messagesDeleted, pendingStatusesDeleted, conversationsDeleted } = this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("DELETE FROM flow_launches WHERE created_at < ? OR expires_at < ? OR launch_message_ref IN (SELECT message_ref FROM messages WHERE occurred_at < ?)", messageCutoff, now, messageCutoff);
       this.ctx.storage.sql.exec(
         `DELETE FROM attachment_chunks WHERE attachment_ref IN (
           SELECT attachment_ref FROM messages WHERE occurred_at < ? AND attachment_ref IS NOT NULL
@@ -325,6 +330,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     if (!conversationRef || conversationRef.length > 200) throw new Error("Invalid conversation reference");
     this.assertInitialized();
     return this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("DELETE FROM flow_launches WHERE conversation_ref = ?", conversationRef);
       this.ctx.storage.sql.exec(
         `DELETE FROM attachment_chunks WHERE attachment_ref IN (
           SELECT attachment_ref FROM messages WHERE conversation_ref = ? AND attachment_ref IS NOT NULL
@@ -352,6 +358,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       const pendingStatusesDeleted = this.ctx.storage.sql.exec<CountRow>(
         "SELECT COUNT(*) AS count FROM pending_message_statuses"
       ).one().count;
+      this.ctx.storage.sql.exec("DELETE FROM flow_launches");
       this.ctx.storage.sql.exec("DELETE FROM attachment_chunks");
       this.ctx.storage.sql.exec("DELETE FROM messages");
       this.ctx.storage.sql.exec("DELETE FROM pending_message_statuses");
@@ -397,6 +404,14 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   async ingestMessage(message: Omit<InternalConversationMessage, "tenantId">): Promise<void> {
     validateMessage(message);
     this.assertInitialized();
+    this.ctx.storage.transactionSync(() => this.ingestMessageSync(message));
+  }
+
+  private ingestMessageSync(message: Omit<InternalConversationMessage, "tenantId">): void {
+    // Correlation claim, message and counters commit together. Webhook retries
+    // keep the first receipt without consuming the launch a second time.
+    if (this.ctx.storage.sql.exec<CountRow>("SELECT COUNT(*) AS count FROM messages WHERE message_ref = ?", message.messageRef).one().count) return;
+    const flowSubmission = message.flowReply ? this.resolveFlowReply(message) : undefined;
     this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO conversations (
         conversation_ref, provider_account_ref, provider_participant_ref,
@@ -418,8 +433,8 @@ export class WhatsAppConversationDurableObject extends DurableObject {
         template_name, occurred_at, status, attachment_ref, attachment_kind,
         attachment_mime_type, attachment_sha256, attachment_caption,
         attachment_filename, attachment_size_bytes, attachment_state,
-        provider_media_ref, media_storage_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        provider_media_ref, media_storage_key, flow_submission_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       message.messageRef,
       message.conversationRef,
       message.direction,
@@ -437,7 +452,8 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       message.attachment?.sizeBytes ?? null,
       message.attachment?.state ?? null,
       message.attachment?.providerMediaRef ?? null,
-      message.attachment?.storageKey ?? null
+      message.attachment?.storageKey ?? null,
+      flowSubmission ? JSON.stringify(flowSubmission) : null
     );
     const inserted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
     if (inserted !== 1) return;
@@ -524,6 +540,61 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       update.status,
       update.occurredAt
     );
+  }
+
+  async registerFlowLaunch(input: InternalFlowLaunch): Promise<void> {
+    this.assertInitialized();
+    flowKindSchema.parse(input.kind);
+    if (!/^[A-Za-z0-9_-]{43}$/u.test(input.tokenHash)) throw new Error("Invalid Flow correlation hash");
+    parseCanonicalIso(input.createdAt, "Flow launch time");
+    parseCanonicalIso(input.expiresAt, "Flow expiry time");
+    if (input.expiresAt <= input.createdAt || Date.parse(input.expiresAt) - Date.parse(input.createdAt) > 7 * 86400000) throw new Error("Invalid Flow expiry");
+    const reservation = this.ctx.storage.sql.exec<{ conversation_ref: string; request_fingerprint: string; status: string }>(
+      "SELECT conversation_ref, request_fingerprint, status FROM outbound_dispatches WHERE idempotency_key = ? AND kind = 'free_form_reply'", input.idempotencyKey
+    ).toArray()[0];
+    if (!reservation || reservation.conversation_ref !== input.conversationRef || reservation.request_fingerprint !== input.requestFingerprint || reservation.status !== "reserved") {
+      throw new Error("Flow launch requires its original outbound reservation");
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO flow_launches (token_hash, conversation_ref, flow_kind, idempotency_key, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      input.tokenHash, input.conversationRef, input.kind, input.idempotencyKey, input.createdAt, input.expiresAt
+    );
+    const saved = this.ctx.storage.sql.exec<{ conversation_ref: string; flow_kind: string; idempotency_key: string }>(
+      "SELECT conversation_ref, flow_kind, idempotency_key FROM flow_launches WHERE token_hash = ?", input.tokenHash
+    ).toArray()[0];
+    if (!saved || saved.conversation_ref !== input.conversationRef || saved.flow_kind !== input.kind || saved.idempotency_key !== input.idempotencyKey) throw new Error("Flow correlation conflict");
+  }
+
+  async bindFlowLaunchMessage(input: { tokenHash: string; conversationRef: string; messageRef: string }): Promise<void> {
+    this.assertInitialized();
+    const message = this.ctx.storage.sql.exec<CountRow>(
+      "SELECT COUNT(*) AS count FROM messages WHERE message_ref = ? AND conversation_ref = ? AND direction = 'outbound' AND kind = 'interactive'",
+      input.messageRef, input.conversationRef
+    ).one();
+    if (message.count !== 1) throw new Error("Flow outbound receipt is unavailable");
+    this.ctx.storage.sql.exec(
+      `UPDATE flow_launches SET launch_message_ref = ? WHERE token_hash = ? AND conversation_ref = ?
+       AND (launch_message_ref IS NULL OR launch_message_ref = ?)`,
+      input.messageRef, input.tokenHash, input.conversationRef, input.messageRef
+    );
+    if (this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count !== 1) throw new Error("Flow outbound receipt conflict");
+  }
+
+  private resolveFlowReply(message: Omit<InternalConversationMessage, "tenantId">): StoredFlowSubmission {
+    const candidate = message.flowReply!;
+    const form = flowFormSchema.safeParse(candidate.form);
+    if (message.direction !== "inbound" || message.kind !== "interactive" || !candidate.tokenHash || !/^[A-Za-z0-9_-]{43}$/u.test(candidate.tokenHash) || !form.success) return { status: "invalid" };
+    const launch = this.ctx.storage.sql.exec<{
+      conversation_ref: string; flow_kind: string; created_at: string; expires_at: string;
+      launch_message_ref: string | null; completion_message_ref: string | null;
+    }>("SELECT * FROM flow_launches WHERE token_hash = ?", candidate.tokenHash).toArray()[0];
+    if (!launch || launch.conversation_ref !== message.conversationRef || launch.flow_kind !== form.data.kind ||
+        launch.expires_at < message.occurredAt || Date.parse(launch.created_at) > Date.parse(message.occurredAt) + 1000 ||
+        (launch.launch_message_ref !== null && launch.launch_message_ref !== candidate.contextMessageRef)) return { status: "unmatched" };
+    if (launch.completion_message_ref !== null) return { status: "duplicate" };
+    this.ctx.storage.sql.exec("UPDATE flow_launches SET completion_message_ref = ? WHERE token_hash = ? AND completion_message_ref IS NULL", message.messageRef, candidate.tokenHash);
+    return { status: "completed", form: form.data };
   }
 
   async updateAttachmentState(
@@ -939,6 +1010,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   async pruneMessages(occurredBefore: string): Promise<number> {
     parseCanonicalIso(occurredBefore, "retention cutoff");
     this.assertInitialized();
+    this.ctx.storage.sql.exec("DELETE FROM flow_launches WHERE created_at < ? OR launch_message_ref IN (SELECT message_ref FROM messages WHERE occurred_at < ?)", occurredBefore, occurredBefore);
     this.ctx.storage.sql.exec(
       `DELETE FROM attachment_chunks WHERE attachment_ref IN (
         SELECT attachment_ref FROM messages WHERE occurred_at < ? AND attachment_ref IS NOT NULL
@@ -1050,7 +1122,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
         template_name, occurred_at, status, attachment_ref, attachment_kind,
         attachment_mime_type, attachment_sha256, attachment_caption,
         attachment_filename, attachment_size_bytes, attachment_state,
-        provider_media_ref, media_storage_key
+        provider_media_ref, media_storage_key, flow_submission_json
        FROM messages WHERE conversation_ref = ? ${cursorSql}
        ORDER BY occurred_at DESC, message_ref DESC LIMIT ?`,
       query.conversationRef,
@@ -1175,6 +1247,22 @@ export class WhatsAppConversationDurableObject extends DurableObject {
         PRIMARY KEY (attachment_ref, chunk_index)
       );
       INSERT INTO _sql_schema_migrations (id) VALUES (5);
+    `);
+    if (currentVersion < 6) this.ctx.storage.sql.exec(`
+      ALTER TABLE messages ADD COLUMN flow_submission_json TEXT;
+      CREATE TABLE flow_launches (
+        token_hash TEXT PRIMARY KEY,
+        conversation_ref TEXT NOT NULL,
+        flow_kind TEXT NOT NULL CHECK(flow_kind IN ('visit', 'wholesale')),
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        launch_message_ref TEXT,
+        completion_message_ref TEXT,
+        FOREIGN KEY(conversation_ref) REFERENCES conversations(conversation_ref) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_flow_launches_expiry ON flow_launches(expires_at);
+      INSERT INTO _sql_schema_migrations (id) VALUES (6);
     `);
   }
 
@@ -1367,6 +1455,7 @@ function mapMessage(row: MessageRow): StoredConversationMessage {
     kind: row.kind,
     ...(row.body_text ? { text: row.body_text } : {}),
     ...(row.template_name ? { templateName: row.template_name } : {}),
+    ...(row.flow_submission_json ? { flowSubmission: flowSubmissionSchema.parse(JSON.parse(row.flow_submission_json)) } : {}),
     ...(row.attachment_ref && row.attachment_kind && row.attachment_mime_type && row.attachment_state ? {
       attachment: {
         attachmentRef: row.attachment_ref,

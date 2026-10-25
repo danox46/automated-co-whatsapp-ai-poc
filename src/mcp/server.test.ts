@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createProtectedWhatsAppMcpHandler } from "./server.js";
 import type { WhatsAppMessagingCapability } from "./outboundPolicy.js";
 import type { WhatsAppAttachmentContentReader } from "./attachmentContent.js";
+import type { SandboxFlowMessaging } from "../meta/sandboxFlowMessaging.js";
 import {
   InMemoryWhatsAppConversationStore,
   type WhatsAppConversationReader
@@ -13,7 +14,8 @@ const resource = "https://auth.automatedandco.danienremoto.com";
 function createAuthorizedHandler(
   messaging?: WhatsAppMessagingCapability,
   conversationReader?: WhatsAppConversationReader,
-  attachmentReader?: WhatsAppAttachmentContentReader
+  attachmentReader?: WhatsAppAttachmentContentReader,
+  flowMessaging?: SandboxFlowMessaging
 ) {
   return createProtectedWhatsAppMcpHandler({
     resource,
@@ -39,7 +41,8 @@ function createAuthorizedHandler(
     },
     messaging,
     conversationReader,
-    attachmentReader
+    attachmentReader,
+    flowMessaging
   });
 }
 
@@ -64,6 +67,26 @@ function closedWindowMessaging(): WhatsAppMessagingCapability {
 }
 
 describe("protected WhatsApp MCP handler", () => {
+  it("exposes draft Flow launch to the intended SDK with write scope and structured receipts", async () => {
+    let calls = 0;
+    const handler = createAuthorizedHandler(undefined, undefined, undefined, { guaranteesDurableIdempotency: true, send: async (_principal, args) => {
+      calls += 1;
+      return { ok: true, messageRef: "synthetic-flow-receipt", status: "accepted", flowType: args.flowType };
+    } });
+    for (const [token, allowed] of [["policy-only-token", false], ["valid-test-token", true]] as const) {
+      const client = new Client({ name: "draft-flow-sdk-test", version: "1.0.0" });
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(`${resource}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } }, fetch: (url, init) => handler.fetch(new Request(url, init)) }));
+        const tool = (await client.listTools()).tools.find(t => t.name === "whatsapp_send_flow");
+        expect(tool?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: true });
+        expect(tool?._meta?.securitySchemes).toEqual([{ type: "oauth2", scopes: ["whatsapp.messages.send"] }]);
+        const result = await client.callTool({ name: "whatsapp_send_flow", arguments: { conversationRef: `conv_${"a".repeat(32)}`, flowType: "visit", idempotencyKey: "original-draft-key" } });
+        if (allowed) expect(result.structuredContent).toEqual({ ok: true, messageRef: "synthetic-flow-receipt", status: "accepted", flowType: "visit" });
+        else expect(result.isError).toBe(true);
+      } finally { await client.close(); }
+    }
+    expect(calls).toBe(1);
+  });
   it("publishes protected-resource metadata for OAuth discovery", async () => {
     const response = await createAuthorizedHandler().fetch(new Request(`${resource}/.well-known/oauth-protected-resource`));
     expect(response.status).toBe(200);
@@ -112,6 +135,7 @@ describe("protected WhatsApp MCP handler", () => {
       getConnectionStatus: forbidden,
       conversationReader: { listConversations: forbidden, getConversationHistory: forbidden },
       attachmentReader: { getAttachmentContent: forbidden },
+      flowMessaging: { guaranteesDurableIdempotency: true, send: forbidden },
       messaging: {
         ...closedWindowMessaging(),
         resolveConversation: forbidden,
@@ -126,7 +150,7 @@ describe("protected WhatsApp MCP handler", () => {
     try {
       await client.connect(transport);
       const tools = (await client.listTools()).tools;
-      expect(tools).toHaveLength(8);
+      expect(tools).toHaveLength(9);
       const args: Record<string, Record<string, unknown>> = {
         whatsapp_get_policy: {}, whatsapp_get_connection_status: {},
         whatsapp_evaluate_action: { action: "read_policy" },
@@ -134,7 +158,8 @@ describe("protected WhatsApp MCP handler", () => {
         whatsapp_get_conversation_history: { conversationRef: "conv_auth_test" },
         whatsapp_get_attachment: { conversationRef: "conv_auth_test", attachmentRef: "att_" + "a".repeat(32) },
         whatsapp_reply_to_inbound: { conversationRef: "conv_auth_test", text: "test", idempotencyKey: "auth-boundary-reply" },
-        whatsapp_send_template: { conversationRef: "conv_auth_test", templateName: "hello_world", variables: [], idempotencyKey: "auth-boundary-template" }
+        whatsapp_send_template: { conversationRef: "conv_auth_test", templateName: "hello_world", variables: [], idempotencyKey: "auth-boundary-template" },
+        whatsapp_send_flow: { conversationRef: `conv_${"a".repeat(32)}`, flowType: "visit", idempotencyKey: "auth-boundary-flow" }
       };
       for (const tool of tools) {
         const result = await client.callTool({ name: tool.name, arguments: args[tool.name] });

@@ -23,7 +23,8 @@ export const WHATSAPP_MCP_CONVERSATION_READ_TOOL_ALLOWLIST = [
 
 export const WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST = [
   "whatsapp_reply_to_inbound",
-  "whatsapp_send_template"
+  "whatsapp_send_template",
+  "whatsapp_send_flow"
 ] as const;
 
 export const WHATSAPP_MCP_TOOL_ALLOWLIST = [
@@ -38,6 +39,7 @@ export const WHATSAPP_MCP_WRITE_ACTIONS = [
   "reply_to_inbound",
   "start_conversation",
   "send_template",
+  "send_flow",
   "bulk_send",
   "create_or_update_template",
   "change_webhook",
@@ -87,7 +89,7 @@ export function evaluateWhatsAppMcpAction(action: WhatsAppMcpAction): WhatsAppPo
     };
   }
 
-  if (action === "reply_to_inbound" || action === "start_conversation" || action === "send_template") {
+  if (action === "reply_to_inbound" || action === "start_conversation" || action === "send_template" || action === "send_flow") {
     return {
       allowed: null,
       action,
@@ -141,7 +143,7 @@ export const whatsappPublicPolicy = {
   alwaysRegisteredTools: WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
   conversationStoreBackedTools: WHATSAPP_MCP_CONVERSATION_READ_TOOL_ALLOWLIST,
   providerBackedTools: WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST,
-  runtimePolicyActions: ["reply_to_inbound", "start_conversation", "send_template"],
+  runtimePolicyActions: ["reply_to_inbound", "start_conversation", "send_template", "send_flow"],
   administrativeActionsNotExposed: [
     "bulk_send",
     "create_or_update_template",

@@ -6,6 +6,16 @@ function json(value: unknown, status = 200): Response {
 }
 
 describe("Meta Graph client", () => {
+  it("sends a draft interactive Flow with a bounded server-owned envelope and never publishes it", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(json({ messages: [{ id: "fixture-flow-result" }] }));
+    const client = createMetaGraphClient({ appId: "app", appSecret: "secret", graphVersion: "v25.0", fetch: request });
+    expect(await client.sendDraftFlow("synthetic-token", "15550000002", "15550000001", { flowId: "111111", screen: "VISIT_SCHEDULE", token: `flow_${"a".repeat(43)}`, text: "Synthetic form", cta: "Open test" })).toEqual({ messageRef: "fixture-flow-result", status: "accepted" });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(String(request.mock.calls[0][0])).toBe("https://graph.facebook.com/v25.0/15550000002/messages");
+    const body = JSON.parse(request.mock.calls[0][1]!.body as string);
+    expect(body).toMatchObject({ type: "interactive", interactive: { type: "flow", action: { name: "flow", parameters: { mode: "draft", flow_message_version: "3", flow_action: "navigate", flow_id: "111111", flow_action_payload: { screen: "VISIT_SCHEDULE" } } } } });
+    expect(String(request.mock.calls[0][0])).not.toContain("synthetic-token");
+  });
   it("exchanges a code, verifies WABA ownership, and subscribes the app", async () => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(json({ access_token: "secret-token", expires_in: 3600 }))

@@ -35,6 +35,17 @@ function request(path: string, method = "GET", body?: unknown, token = "bridge-t
 }
 
 describe("sandbox bot bridge", () => {
+  it("accepts only a named Flow and original intent key, never a provider ID or recipient override", async () => {
+    const f = fixture();
+    const send = vi.fn(async () => ({ ok: true as const, messageRef: "fixture-flow", status: "accepted" as const, flowType: "visit" as const }));
+    const bridge = createSandboxBotBridge({ token: "bridge-token", sandbox, conversations: { getByName: f.getByName } as unknown as DurableConversationNamespace, messaging: {} as WhatsAppMessagingCapability, resource: origin, flowMessaging: { guaranteesDurableIdempotency: true, send } });
+    const path = `/bot/sandbox/conversations/${ref}/flows`;
+    expect((await bridge(request(path, "POST", { flowType: "visit", idempotencyKey: "original-key", recipient: "another-number" })))?.status).toBe(400);
+    expect((await bridge(request(path, "POST", { flowType: "arbitrary", idempotencyKey: "original-key" })))?.status).toBe(400);
+    expect(send).not.toHaveBeenCalled();
+    expect((await bridge(request(path, "POST", { flowType: "visit", idempotencyKey: "original-key" })))?.status).toBe(200);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "owner-sandbox" }), { conversationRef: ref, flowType: "visit", idempotencyKey: "original-key" });
+  });
   it("rejects unauthorized reads and confines queries to the configured sandbox tenant", async () => {
     const f = fixture();
     expect((await f.bridge(request("/bot/sandbox/conversations", "GET", undefined, "wrong")))?.status).toBe(401);

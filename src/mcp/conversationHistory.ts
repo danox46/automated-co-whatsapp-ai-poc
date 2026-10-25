@@ -1,4 +1,5 @@
 import type { WhatsAppMcpPrincipal } from "./auth.js";
+import type { FlowReplyCandidate, StoredFlowSubmission } from "../meta/flowResponses.js";
 
 export const DEFAULT_CONVERSATION_PAGE_SIZE = 20;
 export const MAX_CONVERSATION_PAGE_SIZE = 50;
@@ -67,6 +68,7 @@ export type StoredConversationMessage = {
   text?: string;
   templateName?: string;
   attachment?: StoredMessageAttachment;
+  flowSubmission?: StoredFlowSubmission;
   occurredAt: string;
   status: WhatsAppMessageStatus;
 };
@@ -106,6 +108,7 @@ export type InternalConversationMessage = StoredConversationMessage & {
   providerAccountRef: string;
   providerParticipantRef: string;
   displayName?: string;
+  flowReply?: FlowReplyCandidate;
   attachment?: StoredMessageAttachment & {
     providerMediaRef: string;
     storageKey?: string;
@@ -247,6 +250,7 @@ implements WhatsAppConversationReader, WhatsAppConversationWriter, WhatsAppConve
       ...(message.text ? { text: message.text } : {}),
       ...(message.templateName ? { templateName: message.templateName } : {}),
       ...(message.attachment ? { attachment: publicAttachment(message.attachment) } : {}),
+      ...(message.flowReply ? { flowSubmission: { status: message.flowReply.form && message.flowReply.tokenHash ? "unmatched" as const : "invalid" as const } } : {}),
       occurredAt: message.occurredAt,
       status: message.status
     };

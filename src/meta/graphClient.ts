@@ -281,6 +281,23 @@ export function createMetaGraphClient(options: MetaGraphClientOptions) {
       if (!response.ok || body.success !== true) throw metaError(response, body, "META_FLOW_PUBLISH_FAILED");
     },
 
+    async sendDraftFlow(accessToken: string, phoneNumberId: string, recipient: string, input: {
+      flowId: string; screen: string; token: string; text: string; cta: string;
+    }): Promise<MetaProviderResult> {
+      assertProviderId(input.flowId, "Flow");
+      if (!/^[A-Z][A-Z0-9_]{0,79}$/u.test(input.screen) || !/^flow_[A-Za-z0-9_-]{43}$/u.test(input.token) ||
+          !input.text.trim() || input.text.length > 1024 || !input.cta.trim() || input.cta.length > 30) {
+        throw new MetaGraphError("META_FLOW_PARAMETERS_INVALID", 400, false);
+      }
+      return sendMessage(accessToken, phoneNumberId, {
+        messaging_product: "whatsapp", recipient_type: "individual", to: recipient, type: "interactive",
+        interactive: { type: "flow", body: { text: input.text }, action: { name: "flow", parameters: {
+          flow_message_version: "3", flow_id: input.flowId, flow_cta: input.cta,
+          mode: "draft", flow_token: input.token, flow_action: "navigate", flow_action_payload: { screen: input.screen }
+        } } }
+      });
+    },
+
     async sendText(
       accessToken: string,
       phoneNumberId: string,

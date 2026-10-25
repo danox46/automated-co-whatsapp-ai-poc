@@ -34,7 +34,8 @@ describe("WhatsApp MCP policy", () => {
     ]);
     expect(WHATSAPP_MCP_WRITE_TOOL_ALLOWLIST).toEqual([
       "whatsapp_reply_to_inbound",
-      "whatsapp_send_template"
+      "whatsapp_send_template",
+      "whatsapp_send_flow"
     ]);
     expect(WHATSAPP_MCP_TOOL_ALLOWLIST).toEqual([
       ...WHATSAPP_MCP_READ_TOOL_ALLOWLIST,
@@ -43,7 +44,7 @@ describe("WhatsApp MCP policy", () => {
     ]);
   });
 
-  it.each(["reply_to_inbound", "start_conversation", "send_template"] as const)(
+  it.each(["reply_to_inbound", "start_conversation", "send_template", "send_flow"] as const)(
     "requires server-owned runtime policy state for messaging action %s",
     (action) => {
       const result = evaluateWhatsAppMcpAction(action);
@@ -54,7 +55,7 @@ describe("WhatsApp MCP policy", () => {
   );
 
   it.each(WHATSAPP_MCP_WRITE_ACTIONS.filter(
-    (action) => !["reply_to_inbound", "start_conversation", "send_template"].includes(action)
+    (action) => !["reply_to_inbound", "start_conversation", "send_template", "send_flow"].includes(action)
   ))("blocks unattended administrative action %s", (action) => {
     const result = evaluateWhatsAppMcpAction(action);
     expect(result.allowed).toBe(false);

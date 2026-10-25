@@ -27,6 +27,8 @@ import {
   type WhatsAppConversationReader
 } from "./conversationHistory.js";
 import type { WhatsAppAttachmentContentReader } from "./attachmentContent.js";
+import { flowSubmissionSchema } from "../meta/flowResponses.js";
+import type { SandboxFlowMessaging } from "../meta/sandboxFlowMessaging.js";
 
 const POLICY_READ_SCOPE = "whatsapp.policy.read";
 const CONNECTION_READ_SCOPE = "whatsapp.connection.read";
@@ -47,7 +49,8 @@ const TOOL_OAUTH_SCOPES: Readonly<Record<string, readonly string[]>> = {
   whatsapp_get_conversation_history: [CONVERSATION_READ_SCOPE],
   whatsapp_get_attachment: [MEDIA_READ_SCOPE],
   whatsapp_reply_to_inbound: [MESSAGE_SEND_SCOPE],
-  whatsapp_send_template: [MESSAGE_SEND_SCOPE]
+  whatsapp_send_template: [MESSAGE_SEND_SCOPE],
+  whatsapp_send_flow: [MESSAGE_SEND_SCOPE]
 };
 
 function oauthSecuritySchemes(scopes: readonly string[]): OAuth2SecurityScheme[] {
@@ -157,6 +160,7 @@ export type CreateWhatsAppMcpHandlerOptions = {
   conversationReader?: WhatsAppConversationReader;
   attachmentReader?: WhatsAppAttachmentContentReader;
   messaging?: WhatsAppMessagingCapability;
+  flowMessaging?: SandboxFlowMessaging;
 };
 
 const actionSchema = z.enum([
@@ -167,6 +171,7 @@ const actionSchema = z.enum([
   "reply_to_inbound",
   "start_conversation",
   "send_template",
+  "send_flow",
   "bulk_send",
   "create_or_update_template",
   "change_webhook",
@@ -271,6 +276,7 @@ const conversationMessageSchema = z.object({
   ]),
   text: z.string().optional(),
   templateName: z.string().optional(),
+  flowSubmission: flowSubmissionSchema.optional(),
   attachment: z.object({
     attachmentRef: z.string(),
     kind: z.enum(["image", "audio", "video", "document", "sticker"]),
@@ -412,7 +418,8 @@ function createWhatsAppPolicyServer(
   getConnectionStatus: NonNullable<CreateWhatsAppMcpHandlerOptions["getConnectionStatus"]>,
   conversationReader?: WhatsAppConversationReader,
   attachmentReader?: WhatsAppAttachmentContentReader,
-  messaging?: WhatsAppMessagingCapability
+  messaging?: WhatsAppMessagingCapability,
+  flowMessaging?: SandboxFlowMessaging
 ) {
   const server = new McpServer(
     {
@@ -631,6 +638,25 @@ function createWhatsAppPolicyServer(
     );
   }
 
+  if (flowMessaging) {
+    server.registerTool("whatsapp_send_flow", {
+      title: "Send a sandbox draft WhatsApp Flow",
+      description: "Sends an existing visit or wholesale draft to an allowlisted sandbox conversation inside its verified 24-hour window. Does not publish a Flow. Reuse the original idempotency key after any timeout; structured submissions appear in conversation history.",
+      inputSchema: z.strictObject({ conversationRef: z.string().regex(/^conv_[A-Za-z0-9_-]{32}$/), flowType: z.enum(["visit", "wholesale"]), idempotencyKey: z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/) }),
+      outputSchema: z.discriminatedUnion("ok", [
+        z.object({ ok: z.literal(true), messageRef: z.string(), status: z.enum(["accepted", "queued", "sent"]), flowType: z.enum(["visit", "wholesale"]) }),
+        z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }) })
+      ]),
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: flowMessaging.guaranteesDurableIdempotency },
+      _meta: oauthSecurityMetadata([MESSAGE_SEND_SCOPE])
+    }, async (args) => {
+      const authError = toolAuthorizationError(principal, resource, [MESSAGE_SEND_SCOPE]);
+      if (authError) return authError;
+      const result = await flowMessaging.send(principal as WhatsAppMcpPrincipal, args);
+      return { ...textResult(result), ...(result.ok ? {} : { isError: true as const }) };
+    });
+  }
+
   server.registerTool(
     "whatsapp_get_connection_status",
     {
@@ -720,7 +746,8 @@ export function createProtectedWhatsAppMcpHandler(options: CreateWhatsAppMcpHand
         getConnectionStatus,
         options.conversationReader,
         options.attachmentReader,
-        options.messaging
+        options.messaging,
+        options.flowMessaging
       ));
       return advertiseTopLevelToolSecuritySchemes(await handler.fetch(request));
     }

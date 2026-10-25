@@ -6,6 +6,7 @@ import type {
   WhatsAppMessageKind,
   WhatsAppMessageStatus
 } from "../mcp/conversationHistory.js";
+import { parseFlowReply } from "./flowResponses.js";
 
 type RecordLike = Record<string, unknown>;
 
@@ -52,6 +53,7 @@ export async function persistMetaConversationEvents(
         providerAccountRef,
         persistence.conversationRefSecret
       );
+      const flowReply = await parseFlowReply(rawMessage);
       const normalized: InternalConversationMessage = {
         tenantId: persistence.tenantId,
         conversationRef,
@@ -63,6 +65,7 @@ export async function persistMetaConversationEvents(
         kind: messageKind(rawMessage.type),
         ...messageContent(rawMessage),
         ...(attachment ? { attachment } : {}),
+        ...(flowReply ? { flowReply } : {}),
         occurredAt,
         status: "received"
       };

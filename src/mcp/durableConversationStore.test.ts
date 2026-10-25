@@ -73,6 +73,27 @@ function contextFor(database: DatabaseSyncType): TestDurableObjectState {
 }
 
 describeWithSqlite("SQLite-backed conversation Durable Object", () => {
+  it("reopens persisted Flow answers and correlation after reconstructing the Durable Object", async () => {
+    if (!sqliteModule) throw new Error("node:sqlite unavailable");
+    const db = new sqliteModule.DatabaseSync(":memory:");
+    const ctx = contextFor(db);
+    const first = new ConversationObject(ctx, {});
+    await first.initializeTenant("flow-restart-test");
+    await first.ingestMessage({ conversationRef: "conv-flow", providerAccountRef: "15550000002", providerParticipantRef: "15550000001", messageRef: "inbound", direction: "inbound", kind: "text", text: "Test", occurredAt: "2026-10-25T01:00:00.000Z", status: "received" });
+    const requestFingerprint = "a".repeat(43), tokenHash = "b".repeat(43);
+    const key = "restart-original-key";
+    await first.reserveOutboundDispatch({ conversationRef: "conv-flow", kind: "free_form_reply", idempotencyKey: key, requestFingerprint, expectedPolicyRevision: "v1", now: "2026-10-25T01:01:00.000Z", notAfter: "2026-10-26T01:00:00.000Z" });
+    await first.registerFlowLaunch({ tokenHash, conversationRef: "conv-flow", kind: "wholesale", idempotencyKey: key, requestFingerprint, createdAt: "2026-10-25T01:01:00.000Z", expiresAt: "2026-11-01T01:01:00.000Z" });
+    const reply = { conversationRef: "conv-flow", providerAccountRef: "15550000002", providerParticipantRef: "15550000001", messageRef: "response", direction: "inbound" as const, kind: "interactive" as const, occurredAt: "2026-10-25T01:02:00.000Z", status: "received" as const,
+      flowReply: { tokenHash, form: { kind: "wholesale" as const, answers: { city: "Bogotá", budget_range: "200_500" as const, selling_status: "not_yet" as const } } } };
+    await first.ingestMessage(reply);
+    const reopened = new ConversationObject(ctx, {});
+    await reopened.initializeTenant("flow-restart-test");
+    expect((await reopened.getConversationHistory({ conversationRef: "conv-flow" }))?.messages.find(m => m.messageRef === "response")?.flowSubmission).toMatchObject({ status: "completed", form: { kind: "wholesale", answers: { city: "Bogotá" } } });
+    await reopened.ingestMessage({ ...reply, messageRef: "second-response" });
+    expect((await reopened.getConversationHistory({ conversationRef: "conv-flow" }))?.messages.find(m => m.messageRef === "second-response")?.flowSubmission).toEqual({ status: "duplicate" });
+    db.close();
+  });
   for (const operation of ["single", "tenant", "retention"] as const) {
     it(`cleans consent rows atomically for ${operation} deletion under foreign-key enforcement`, async () => {
       if (!sqliteModule) throw new Error("node:sqlite unavailable");

@@ -47,6 +47,7 @@ import { createWhatsAppPolicyAdminHandler } from "../meta/policyAdmin.js";
 import { decryptPilotSecret } from "../meta/pilotCrypto.js";
 import { createSandboxBotBridge } from "../meta/sandboxBotBridge.js";
 import { createSandboxFlowAdmin } from "../meta/sandboxFlowAdmin.js";
+import { createSandboxFlowMessaging } from "../meta/sandboxFlowMessaging.js";
 import { opaqueConversationRef } from "../meta/conversationEvents.js";
 import {
   readWhatsAppSandboxConfig,
@@ -67,6 +68,8 @@ export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & WhatsAppSandboxEnv & 
   INSTALLATION_ENCRYPTION_KEY?: string;
   PILOT_ADMIN_TOKEN?: string;
   SANDBOX_BOT_BRIDGE_TOKEN?: string;
+  META_SANDBOX_VISIT_FLOW_ID?: string;
+  META_SANDBOX_WHOLESALE_FLOW_ID?: string;
   PUBLIC_ORIGIN?: string;
   OAUTH_SIGNING_KEY_ID?: string;
   OAUTH_SIGNING_PRIVATE_JWK?: string;
@@ -128,6 +131,11 @@ export function createPersistentWhatsAppWorker(
           return true;
         }
       }) : undefined);
+      const flowMessaging = sandbox && graph && (env.META_SANDBOX_VISIT_FLOW_ID || env.META_SANDBOX_WHOLESALE_FLOW_ID) ? createSandboxFlowMessaging({
+        sandbox, graph, registry, conversations: env.CONVERSATIONS,
+        flowIds: { visit: env.META_SANDBOX_VISIT_FLOW_ID, wholesale: env.META_SANDBOX_WHOLESALE_FLOW_ID },
+        encryptionKey: env.INSTALLATION_ENCRYPTION_KEY as string, correlationSecret: env.CONVERSATION_REF_SECRET
+      }) : undefined;
       const attachmentReader = createDurableAttachmentContentReader(env.CONVERSATIONS);
       const attachmentCapture = graph ? createMetaAttachmentCapture({
         registry,
@@ -142,6 +150,7 @@ export function createPersistentWhatsAppWorker(
         sandbox: sandboxConfigurationValid ? sandbox : null,
         conversations: env.CONVERSATIONS,
         messaging: runtimeMessaging,
+        flowMessaging,
         listFlows: sandbox && graph ? async () => {
           const installation = await registry.getInstallation(sandbox.tenantId);
           if (!installation || installation.status !== "connected" || installation.wabaId !== sandbox.wabaId) {
@@ -287,6 +296,7 @@ export function createPersistentWhatsAppWorker(
           sandboxConfigurationValid,
           sandboxRecipientRestriction: sandbox ? "server-allowlist" : "not-configured",
           sandboxBotBridgeConfigured: Boolean(sandbox && env.SANDBOX_BOT_BRIDGE_TOKEN && runtimeMessaging),
+          draftFlowTestingConfigured: Boolean(flowMessaging),
           oauthConfigured,
           tenantRouting: "waba-sharded",
           oauthVerifierConfigured: Boolean(runtimeTokenVerifier),
@@ -304,6 +314,7 @@ export function createPersistentWhatsAppWorker(
         authorizationServer: resource ?? "https://unconfigured.invalid",
         conversationReader: createDurableConversationReader(env.CONVERSATIONS, retentionPolicy),
         attachmentReader,
+        flowMessaging,
         getConnectionStatus: async (principal) => {
           const installation = await registry.getInstallation(principal.tenantId);
           return {

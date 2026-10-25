@@ -16,6 +16,7 @@ describe("deployed-entry sandbox bridge contract", () => {
       sandboxConfigured: true,
       sandboxConfigurationValid: true,
       sandboxBotBridgeConfigured: true,
+      draftFlowTestingConfigured: true,
       sandboxRecipientRestriction: "server-allowlist"
     });
   });
@@ -24,6 +25,7 @@ describe("deployed-entry sandbox bridge contract", () => {
     ["GET", "/bot/sandbox/conversations"],
     ["GET", `/bot/sandbox/conversations/${ref}/history`],
     ["POST", `/bot/sandbox/conversations/${ref}/replies`],
+    ["POST", `/bot/sandbox/conversations/${ref}/flows`],
     ["GET", "/bot/sandbox/flows"]
   ]) {
     it(`keeps ${method} ${path} wired and protected before any operation`, async () => {

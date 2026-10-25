@@ -29,7 +29,11 @@ async function fixture() {
   const db = new sqliteModule.DatabaseSync(":memory:", { enableForeignKeyConstraints: true });
   databases.push(db);
   const ctx = {
-    storage: { sql: { exec(query: string, ...bindings: (string | number | null)[]) {
+    storage: { transactionSync<T>(callback: () => T): T {
+      db.exec("BEGIN");
+      try { const result = callback(); db.exec("COMMIT"); return result; }
+      catch (error) { db.exec("ROLLBACK"); throw error; }
+    }, sql: { exec(query: string, ...bindings: (string | number | null)[]) {
       let rows: unknown[] = [];
       if (!bindings.length && query.includes(";")) db.exec(query);
       else rows = db.prepare(query).all(...bindings);
