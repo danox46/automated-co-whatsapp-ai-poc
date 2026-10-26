@@ -9,9 +9,12 @@ import { SUPPORTED_WHATSAPP_MCP_SCOPES } from '../src/mcp/auth.js';
 import { opaqueInstallationRef } from '../src/meta/installationIdentity.js';
 
 describe('Worker Morning identity routing', () => {
-  it('starts repeated logins without reusing a previous request-owned Durable Object stub', async () => {
+  it.each([
+    { clientId: NATIVE_WHATSAPP_BOT_CLIENT_ID, redirectUri: 'http://127.0.0.1:9468/callback', native: true },
+    { clientId: 'https://chatgpt.com/oauth/client.json', redirectUri: 'https://chatgpt.com/connector_platform_oauth_redirect', native: false }
+  ])('starts repeated $clientId logins without a stale onboarding cookie or request-owned Durable Object stub', async ({ clientId, redirectUri, native }) => {
     const issuer = 'https://morning.fixture.test'; let requestGeneration = 0;
-    const effective = { ...env, BOT_OAUTH_REDIRECT_URI: 'http://127.0.0.1:9468/callback', MORNING_ISSUER: issuer,
+    const effective = { ...env, BOT_OAUTH_REDIRECT_URI: native ? redirectUri : undefined, MORNING_ISSUER: issuer,
       MORNING_CLIENT_ID: 'whatsapp-internal-bot', MORNING_OPERATOR_BINDINGS: JSON.stringify([
         { subject: `morning:oidc-${'a'.repeat(32)}`, installations: [{ tenantId: 'fixture', label: 'Fixture' }] }
       ]), OAUTH_STATE: { getByName(name: string) {
@@ -32,8 +35,8 @@ describe('Worker Morning identity routing', () => {
       userinfo_endpoint: issuer + '/integrations/identity/userinfo', jwks_uri: issuer + '/integrations/identity/jwks',
       response_types_supported: ['code'], subject_types_supported: ['public'], id_token_signing_alg_values_supported: ['RS256'],
       token_endpoint_auth_methods_supported: ['none'], code_challenge_methods_supported: ['S256'] }) });
-    const location = 'https://pilot.test/oauth/authorize?' + new URLSearchParams({ client_id: NATIVE_WHATSAPP_BOT_CLIENT_ID,
-      redirect_uri: effective.BOT_OAUTH_REDIRECT_URI!, response_type: 'code', resource: 'https://pilot.test', scope: 'whatsapp.connection.read',
+    const location = 'https://pilot.test/oauth/authorize?' + new URLSearchParams({ client_id: clientId,
+      redirect_uri: redirectUri, response_type: 'code', resource: 'https://pilot.test', scope: 'whatsapp.connection.read',
       code_challenge_method: 'S256', code_challenge: 'a'.repeat(43), state: 'synthetic-native-request' });
     for (let index = 0; index < 3; index++) {
       requestGeneration++;
@@ -80,6 +83,18 @@ describe('Worker Morning identity routing', () => {
     expect(legacy.status).toBe(302);
     const legacyCode = new URL(legacy.headers.get('location')!).searchParams.get('code')!;
     expect(await state.store.consumeAuthorizationCode(await sha256Base64Url(legacyCode))).toMatchObject({ tenantId: old });
+    const cloudReentry = await worker.fetch(new Request(legacyUrl, { headers: { cookie: `__Host-wa_morning_session=${rawSession}` } }), effective);
+    expect(cloudReentry.status).toBe(302);
+    const cloudCode = new URL(cloudReentry.headers.get('location')!).searchParams.get('code')!;
+    expect(await state.store.consumeAuthorizationCode(await sha256Base64Url(cloudCode))).toMatchObject({ tenantId: selected, subject });
+    const expiredPilot = await worker.fetch(new Request(legacyUrl, { headers: { cookie: `__Host-wa_pilot_session=${'z'.repeat(43)}; __Host-wa_morning_session=${rawSession}` } }), effective);
+    expect(expiredPilot.status).toBe(302);
+    const expiredPilotCode = new URL(expiredPilot.headers.get('location')!).searchParams.get('code')!;
+    expect(await state.store.consumeAuthorizationCode(await sha256Base64Url(expiredPilotCode))).toMatchObject({ tenantId: selected, subject });
+    const foreignClient = new URL(legacyUrl); foreignClient.searchParams.set('client_id', 'https://foreign.test/client');
+    expect((await worker.fetch(new Request(foreignClient), effective)).status).toBe(400);
+    const foreignRedirect = new URL(legacyUrl); foreignRedirect.searchParams.set('redirect_uri', 'https://foreign.test/callback');
+    expect((await worker.fetch(new Request(foreignRedirect), effective)).status).toBe(400);
     const fresh = await worker.fetch(new Request(nativeUrl, { headers: { cookie: `__Host-wa_pilot_session=${prior.rawSession}` } }), effective);
     expect(fresh.status).toBe(303); expect(new URL(fresh.headers.get('location')!).origin).toBe(issuer);
   });

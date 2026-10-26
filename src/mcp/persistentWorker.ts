@@ -177,7 +177,7 @@ export function createPersistentWhatsAppWorker(
         const nativeClient = nativeBotOAuthClient(env.BOT_OAUTH_REDIRECT_URI);
         if (nativeClient?.clientId === env.OAUTH_CLIENT_ID) throw new Error("Native and ChatGPT OAuth registrations must remain distinct");
         let morning: MorningOperatorSessions | undefined;
-        if (nativeClient && env.MORNING_ISSUER && env.MORNING_CLIENT_ID && env.MORNING_OPERATOR_BINDINGS && env.INSTALLATION_ENCRYPTION_KEY) {
+        if (env.MORNING_ISSUER && env.MORNING_CLIENT_ID && env.MORNING_OPERATOR_BINDINGS && env.INSTALLATION_ENCRYPTION_KEY) {
           // The resolver closes over this request's Durable Object stubs and
           // installation registry. Never cache request-owned I/O across fetches.
           morning = new MorningOperatorSessions({ origin: resource, issuer: env.MORNING_ISSUER, clientId: env.MORNING_CLIENT_ID,
@@ -203,10 +203,15 @@ export function createPersistentWhatsAppWorker(
           resolveSession: async (authorizationRequest) => {
             if (morning && new URL(authorizationRequest.url).searchParams.get('client_id') === NATIVE_WHATSAPP_BOT_CLIENT_ID) return morning.resolve(authorizationRequest);
             const rawSession = readCookie(authorizationRequest, PILOT_SESSION_COOKIE);
-            return rawSession ? oauthState.resolvePilotSession(rawSession) : null;
+            // Preserve an existing business's Embedded Signup session. Once it
+            // expires, the same registered cloud client can use Morning's
+            // explicit operator assignments instead of repeating Meta signup.
+            const pilotSession = rawSession ? await oauthState.resolvePilotSession(rawSession) : null;
+            return pilotSession ?? (morning ? morning.resolve(authorizationRequest) : null);
           },
-          onSessionRequired: morning ? async authorizationRequest => new URL(authorizationRequest.url).searchParams.get('client_id') === NATIVE_WHATSAPP_BOT_CLIENT_ID
-            ? morning!.start(authorizationRequest) : Response.json({ error: 'login_required', error_description: 'Sign in through the existing WhatsApp connection before authorizing this client.' }, { status: 401, headers: { 'Cache-Control': 'no-store' } }) : undefined,
+          // The authorization server validates the registered client, exact
+          // redirect, resource, scopes and PKCE before requesting sign-in.
+          onSessionRequired: morning ? authorizationRequest => morning!.start(authorizationRequest) : undefined,
           clientIdMetadataDocumentSupported: true
         });
         const authorizationResponse = await authorizationServer.fetch(request);

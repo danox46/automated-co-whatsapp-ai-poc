@@ -100,3 +100,26 @@ by environment allowed one login to succeed and the next to fail. A regression
 test now invalidates old request-owned I/O, and repeated live login starts and
 owner callbacks pass after the fix. This does not relax issuer, PKCE, nonce,
 cookie/state, assignment, encryption or MCP scope checks.
+
+## Registered cloud-client re-entry
+
+The registered ChatGPT connector can also use the existing Morning identity
+flow when its Embedded Signup session is absent or expired. A valid pilot
+session retains its original tenant path; native setup still uses Morning's
+explicit installation assignment. The cloud route does not require a native
+loopback client to be enabled. Unknown clients, mismatched redirects, resource,
+scopes and invalid PKCE are rejected before starting Morning sign-in.
+
+This reuses the same configured operator bindings, issuer and short-lived
+identity session. It creates no new reviewer/user assignment, broader scope,
+permanent invitation or owner fallback. An unfinished business chooser from a
+different OAuth request restarts identity binding for the new exact request,
+rather than returning a cloud client to the old native callback/state.
+
+Red Worker regressions reproduced a cloud401 both without its onboarding
+cookie and with a valid Morning session. The corrected routing preserves
+the existing pilot-cookie path and rejects foreign client/redirect requests.
+A separate red/green chooser regression covers distinct native/cloud states.
+Full source verification:248unit tests,50Worker tests,typecheck and build.
+These source tests use synthetic identities; reviewer/user acceptance and
+provider-backed conversation operations remain separate evidence.

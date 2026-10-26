@@ -52,6 +52,18 @@ async function fixture(multiple = false) {
     revoke: () => { validUserInfo = false; }, unknownSubject: () => { tokenSubject = `morning:oidc-${'b'.repeat(32)}`; }, corruptNonce: () => { badNonce = true; }, advance: (ms: number) => { now += ms; } };
 }
 describe('Morning operator to WhatsApp installation sign-in', () => {
+  it('restarts identity binding when an unfinished chooser belongs to another OAuth request', async () => {
+    const f = await fixture(true), response = (await (await f.begin()).finish())!;
+    const sessionCookie = cookie(response, '__Host-wa_morning_session');
+    const cloud = new URL(f.returnTo);
+    cloud.searchParams.set('client_id', 'https://chatgpt.com/oauth/client.json');
+    cloud.searchParams.set('state', 'distinct-cloud-request');
+    const resumed = await f.sessions.resolve(new Request(cloud, { headers: { cookie: sessionCookie } })) as Response;
+    expect(resumed.status).toBe(303);
+    expect(new URL(resumed.headers.get('location')!).origin).toBe(issuer);
+    expect(resumed.headers.get('set-cookie')).toContain('__Host-wa_morning_flow=');
+    expect(f.tokenCalls()).toBe(1);
+  });
   it('honors an assigned profile reference over the browser previous choice and denies foreign or duplicate references', async () => {
     const f = await fixture(true), response = (await (await f.begin()).finish())!, sessionCookie = cookie(response, '__Host-wa_morning_session');
     const picker = (await f.sessions.handle(new Request(origin + '/auth/select', { headers: { cookie: sessionCookie } })))!;

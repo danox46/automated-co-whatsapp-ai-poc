@@ -153,7 +153,13 @@ export class MorningOperatorSessions {
     const choices = await this.connected(current.value.subject);
     const selected = requested ? choices.find(x => x.installationRef === requested)?.tenantId : current.value.tenantId;
     if (requested && !selected) return this.problem('The requested business is disconnected or not assigned to this Morning account.', 403);
-    if (!selected) return this.redirect(this.options.origin + '/auth/select');
+    if (!selected) {
+      // An unfinished chooser retains the OAuth request it will resume. Do not
+      // send a different client/state back to that previous request after a
+      // cloud/native re-entry; establish a fresh flow for this exact request.
+      if (request.url !== current.value.returnTo) return this.start(request);
+      return this.redirect(this.options.origin + '/auth/select');
+    }
     if (!choices.some(x => x.tenantId === selected)) return this.problem('The selected business is disconnected or no longer assigned to this Morning account.', 403);
     return { subject: current.value.subject, tenantId: selected, approvedScopes: new Set(SUPPORTED_WHATSAPP_MCP_SCOPES) };
   }
