@@ -13,6 +13,22 @@ function createFixture() {
   let nextInvite = "invite_token_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
   let orphanedConnectedSeats = 0;
   const registry: PilotOnboardingDependencies["registry"] = {
+    async createReauthorizationInvite(input, now = new Date()) {
+      const installation = installations.get(input.tenantId);
+      if (!installation || installation.status !== "connected") throw new Error("Connected installation required");
+      const token = nextInvite; nextInvite += "x";
+      invites.set(token, { ...input, cohortRole: "internal", createdAt: now.toISOString(), reauthorization: {
+        wabaId: installation.wabaId, phoneNumberId: installation.phoneNumberId, credentialIv: installation.encryptedAccessToken.iv
+      } });
+      return token;
+    },
+    async completeReauthorization(token, installation, now = new Date()) {
+      const invite = invites.get(token); const existing = installations.get(installation.tenantId);
+      if (!invite || invite.usedAt || !invite.reauthorization || !existing || existing.status !== "connected" ||
+          existing.encryptedAccessToken.iv !== invite.reauthorization.credentialIv) return false;
+      installations.set(installation.tenantId, structuredClone(installation)); invite.usedAt = now.toISOString();
+      return true;
+    },
     async createInvite(input, now = new Date()) {
       if (orphanedConnectedSeats > 0) throw new Error("internal cohort limit reached");
       const token = nextInvite;
@@ -170,10 +186,11 @@ function adminRequest(path: string, method: string, body?: unknown, token = "own
   });
 }
 
-async function signupBrowserFixture(callbackFetch: typeof fetch) {
+async function signupBrowserFixture(callbackFetch: typeof fetch, reauthorization = false) {
   const fixture = createFixture();
+  if (reauthorization) await existingMorningFixture(fixture);
   const invitationResponse = await fixture.handler.fetch(adminRequest(
-    "/admin/pilot/invitations", "POST",
+    reauthorization ? "/admin/pilot/installations/existing-morning/reauthorization-invitations" : "/admin/pilot/invitations", "POST",
     { tenantId: "review-browser", label: "Morning review", cohortRole: "client" }
   ));
   const invitation = await invitationResponse?.json() as { invitationUrl: string };
@@ -189,6 +206,7 @@ async function signupBrowserFixture(callbackFetch: typeof fetch) {
   const status = { textContent: "" };
   let receive: (event: { origin: string; data: unknown }) => void = () => undefined;
   let completeLogin: (response: unknown) => void = () => undefined;
+  const loginOptions = vi.fn();
   const window = {
     fbAsyncInit: () => undefined,
     addEventListener: (_name: string, handler: typeof receive) => { receive = handler; }
@@ -202,17 +220,17 @@ async function signupBrowserFixture(callbackFetch: typeof fetch) {
     },
     FB: {
       init: () => undefined,
-      login: (callback: typeof completeLogin) => { completeLogin = callback; }
+      login: (callback: typeof completeLogin, options: unknown) => { completeLogin = callback; loginOptions(options); }
     },
     fetch: callbackFetch
   });
   window.fbAsyncInit();
   const click = button.addEventListener.mock.calls[0]?.[1] as () => void;
   return {
-    button, status, click,
+    button, status, click, loginOptions,
     login: () => completeLogin({ authResponse: { code: "A2345678901234567890" } }),
-    finish: () => receive({ origin: "https://www.facebook.com", data: {
-      type: "WA_EMBEDDED_SIGNUP", event: "FINISH",
+    finish: (event = reauthorization ? "FINISH_GRANT_ONLY_API_ACCESS" : "FINISH") => receive({ origin: "https://www.facebook.com", data: {
+      type: "WA_EMBEDDED_SIGNUP", event,
       data: { waba_id: "100200300", phone_number_id: "400500600" }
     } }),
     cancel: () => receive({ origin: "https://www.facebook.com", data: {
@@ -233,7 +251,128 @@ async function submitFixtureSignup(fixture: ReturnType<typeof createFixture>, te
     body: JSON.stringify({ state, code: 'A2345678901234567890', wabaId: '100200300', phoneNumberId: '400500600' }) }));
 }
 
+async function existingMorningFixture(fixture = createFixture()) {
+  const installation: PilotInstallationRecord = { tenantId: "existing-morning", wabaId: "100200300", phoneNumberId: "400500600",
+    encryptedAccessToken: await encryptPilotSecret("original-working-token", fixture.encryptionKey),
+    connectedAt: "2026-09-07T11:00:00.000Z", webhookSubscribedAt: "2026-09-07T11:00:00.000Z", status: "connected" };
+  fixture.installations.set(installation.tenantId, installation);
+  return { fixture, installation };
+}
+
+async function reauthorizationFixture() {
+  const { fixture, installation } = await existingMorningFixture();
+  const invite = await (await fixture.handler.fetch(adminRequest(
+    "/admin/pilot/installations/existing-morning/reauthorization-invitations", "POST", { label: "Reconnect Morning" })))!.json() as { invitationUrl: string };
+  const redirect = await fixture.handler.fetch(new Request(invite.invitationUrl));
+  const cookie = redirect!.headers.get("set-cookie")!.split(";")[0];
+  const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`, { headers: { cookie } }));
+  const cfg = JSON.parse(/const cfg=(\{.*?\});let/u.exec(await page!.text())![1]);
+  return { fixture, installation, async submit(overrides: Record<string, unknown> = {}) {
+    return fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/callback`, { method: "POST",
+      headers: { cookie, Origin: origin, "Content-Type": "application/json" },
+      body: JSON.stringify({ code: "A2345678901234567890", state: cfg.state, wabaId: installation.wabaId,
+        phoneNumberId: installation.phoneNumberId, ...overrides }) }));
+  } };
+}
+
 describe("closed-pilot onboarding", () => {
+  it("renews the same installation without losing history, original connection date or existing grants", async () => {
+    const f = await reauthorizationFixture();
+    const response = await f.submit();
+    expect(response?.status).toBe(200);
+    expect(await response!.json()).toMatchObject({ tenantId: "existing-morning", reauthorized: true });
+    const current = f.fixture.installations.get("existing-morning")!;
+    expect(current.connectedAt).toBe(f.installation.connectedAt);
+    expect(current.webhookSubscribedAt).toBe(f.installation.webhookSubscribedAt);
+    expect(current.encryptedAccessToken.iv).not.toBe(f.installation.encryptedAccessToken.iv);
+    expect(f.fixture.graph.subscribeApp).not.toHaveBeenCalled();
+    expect(f.fixture.graph.unsubscribeApp).not.toHaveBeenCalled();
+    expect(f.fixture.deleteConversationData).not.toHaveBeenCalled();
+    expect(f.fixture.revokeAuthorizationSessions).not.toHaveBeenCalled();
+    expect((await f.submit())?.status).toBe(409);
+    expect(f.fixture.graph.exchangeEmbeddedSignupCode).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an account or phone swap before exchanging a one-time code", async () => {
+    for (const override of [{ wabaId: "100200399" }, { phoneNumberId: "400500699" }]) {
+      const f = await reauthorizationFixture();
+      const response = await f.submit(override);
+      expect(response?.status).toBe(409);
+      expect(await response!.text()).toContain("PILOT_REAUTHORIZATION_ASSET_MISMATCH");
+      expect(f.fixture.graph.exchangeEmbeddedSignupCode).not.toHaveBeenCalled();
+      expect(f.fixture.installations.get("existing-morning")).toEqual(f.installation);
+    }
+  });
+
+  it("preserves a concurrently refreshed credential and reports the losing authorization", async () => {
+    const f = await reauthorizationFixture();
+    const replacement = await encryptPilotSecret("newer-provider-token", f.fixture.encryptionKey);
+    f.fixture.graph.verifyPhoneBelongsToWaba.mockImplementationOnce(async () => {
+      f.fixture.installations.set("existing-morning", { ...f.installation, encryptedAccessToken: replacement });
+      return { id: f.installation.phoneNumberId };
+    });
+    const response = await f.submit();
+    expect(response?.status).toBe(409);
+    expect(await response!.text()).toContain("PILOT_REAUTHORIZATION_SUPERSEDED");
+    expect(f.fixture.installations.get("existing-morning")?.encryptedAccessToken).toEqual(replacement);
+    expect(f.fixture.createAuthorizationSession).not.toHaveBeenCalled();
+    expect(f.fixture.graph.unsubscribeApp).not.toHaveBeenCalled();
+  });
+
+  it("does not replace the working credential when provider verification fails", async () => {
+    const f = await reauthorizationFixture();
+    f.fixture.graph.verifyPhoneBelongsToWaba.mockRejectedValueOnce(new Error("provider unavailable"));
+    expect((await f.submit())?.status).toBe(502);
+    expect(f.fixture.installations.get("existing-morning")).toEqual(f.installation);
+    expect(f.fixture.createAuthorizationSession).not.toHaveBeenCalled();
+    expect(f.fixture.graph.unsubscribeApp).not.toHaveBeenCalled();
+  });
+
+  it("launches the documented app-only flow and requires its matching completion event", async () => {
+    const send = vi.fn(async () => Response.json({ ok: true }));
+    const browser = await signupBrowserFixture(send, true);
+    browser.click(); browser.login(); browser.finish("FINISH");
+    expect(send).not.toHaveBeenCalled();
+    expect(browser.loginOptions).toHaveBeenCalledWith(expect.objectContaining({ extras: {
+      version: "v3", features: [{ name: "app_only_install" }], sessionInfoVersion: "3"
+    } }));
+    browser.finish();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+  });
+
+  it("explains a definite expired signup session without labeling it as an uncertain connection", async () => {
+    const send = vi.fn(async () => Response.json({ error: { code: "PILOT_SESSION_INVALID" } }, { status: 409 }));
+    const browser = await signupBrowserFixture(send, true);
+    browser.click(); browser.login(); browser.finish();
+    await vi.waitFor(() => expect(browser.status.textContent).toContain("Reload this page"));
+    expect(browser.status.textContent).toContain("existing connection is unchanged");
+    expect(send).toHaveBeenCalledOnce();
+  });
+  it("issues an admin-only, short-lived reauthorization for an existing connected installation", async () => {
+    const fixture = createFixture();
+    const path = "/admin/pilot/installations/existing-morning/reauthorization-invitations";
+    expect((await fixture.handler.fetch(adminRequest(path, "POST", { label: "Reconnect Morning" }, "wrong")))?.status).toBe(401);
+    expect((await fixture.handler.fetch(adminRequest(path, "POST", { label: "Reconnect Morning" })))?.status).toBe(404);
+    const existing: PilotInstallationRecord = { tenantId: "existing-morning", wabaId: "100200300", phoneNumberId: "400500600",
+      encryptedAccessToken: await encryptPilotSecret("original-working-token", fixture.encryptionKey),
+      connectedAt: "2026-09-07T11:00:00.000Z", webhookSubscribedAt: "2026-09-07T11:00:00.000Z", status: "connected" };
+    fixture.installations.set(existing.tenantId, existing);
+    expect((await fixture.handler.fetch(adminRequest(path, "POST", { label: "Reconnect Morning", expiresInHours: 25 })))?.status).toBe(400);
+    const response = await fixture.handler.fetch(adminRequest(path, "POST", { label: "Reconnect Morning" }));
+    expect(response?.status).toBe(201);
+    const invitation = await response!.json() as { invitationUrl: string; expiresAt: string };
+    expect(Date.parse(invitation.expiresAt) - Date.parse("2026-09-07T12:00:00.000Z")).toBe(86400000);
+    const redirect = await fixture.handler.fetch(new Request(invitation.invitationUrl));
+    const cookie = redirect!.headers.get("set-cookie")!.split(";")[0];
+    const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`, { headers: { cookie } }));
+    const html = await page!.text();
+    expect(html).toContain("app_only_install");
+    expect(html).toContain("FINISH_GRANT_ONLY_API_ACCESS");
+    expect(html).not.toContain(existing.wabaId);
+    expect(html).not.toContain(existing.encryptedAccessToken.iv);
+    expect(fixture.installations.get(existing.tenantId)).toEqual(existing);
+    expect(fixture.graph.subscribeApp).not.toHaveBeenCalled();
+  });
   it("offers an invitation-entry page without creating a session or exposing provider configuration", async () => {
     const fixture = createFixture();
     const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`));

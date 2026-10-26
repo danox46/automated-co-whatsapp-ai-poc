@@ -1,5 +1,5 @@
 import { createMetaGraphClient, MetaGraphError } from "./graphClient.js";
-import { createPilotInstallationRegistry } from "./pilotInstallationStore.js";
+import { createPilotInstallationRegistry, type PilotInstallationRecord } from "./pilotInstallationStore.js";
 import { pilotAccountProfileCommandSchema } from "./pilotAccountProfile.js";
 import { opaqueInstallationRef } from "./installationIdentity.js";
 import {
@@ -80,6 +80,8 @@ export function createPilotOnboardingHandler(
       if (url.pathname === "/admin/pilot/sandbox/invitations/rotate" && request.method === "POST") {
         return createSandboxInvitation(request, true);
       }
+      const reauthorizationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})\/reauthorization-invitations$/u.exec(url.pathname);
+      if (reauthorizationMatch && request.method === "POST") return createReauthorizationInvitation(request, reauthorizationMatch[1]);
       const profileMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})\/account-profile$/u.exec(url.pathname);
       if (profileMatch) return accountProfile(request, profileMatch[1]);
       const installationMatch = /^\/admin\/pilot\/installations\/([a-z0-9][a-z0-9_-]{2,63})(?:\/(disconnect|reconcile-disconnect|provider-status|refresh-sandbox-credential))?$/u.exec(url.pathname);
@@ -137,7 +139,8 @@ export function createPilotOnboardingHandler(
       appId: env.META_APP_ID,
       configId: env.META_EMBEDDED_SIGNUP_CONFIG_ID,
       graphVersion: env.META_GRAPH_API_VERSION,
-      sessionVersion: env.META_EMBEDDED_SIGNUP_SESSION_VERSION ?? "4"
+      sessionVersion: env.META_EMBEDDED_SIGNUP_SESSION_VERSION ?? "4",
+      reauthorization: Boolean(invite.reauthorization)
     });
   }
 
@@ -161,6 +164,15 @@ export function createPilotOnboardingHandler(
     let accessToken: string | null = null;
     let subscribed = false;
     try {
+      const pin = invite.reauthorization;
+      const previous = pin ? await dependencies.registry.getInstallation(invite.tenantId) : null;
+      if (pin && (wabaId !== pin.wabaId || phoneNumberId !== pin.phoneNumberId)) {
+        return jsonError("PILOT_REAUTHORIZATION_ASSET_MISMATCH", "Choose the existing WhatsApp account and phone number assigned to this connection. No connection was changed.", 409);
+      }
+      if (pin && (!previous || previous.status !== "connected" || previous.wabaId !== pin.wabaId ||
+          previous.phoneNumberId !== pin.phoneNumberId || previous.encryptedAccessToken.iv !== pin.credentialIv)) {
+        return jsonError("PILOT_REAUTHORIZATION_SUPERSEDED", "The existing connection changed after this invitation was issued. Ask for a fresh reconnect invitation; no connection was changed.", 409);
+      }
       const token = await dependencies.graph.exchangeEmbeddedSignupCode(code);
       accessToken = token.accessToken;
       const phone = await dependencies.graph.verifyPhoneBelongsToWaba(accessToken, wabaId, phoneNumberId);
@@ -168,21 +180,28 @@ export function createPilotOnboardingHandler(
       if (existingOwner && existingOwner !== invite.tenantId) {
         return jsonError("PILOT_WABA_ALREADY_CONNECTED", "This WhatsApp business account is already connected. Use its existing MCP connection, or reopen this invitation and select a different account.", 409);
       }
-      await dependencies.graph.subscribeApp(accessToken, wabaId);
-      subscribed = true;
+      if (!pin || !await dependencies.graph.isAppSubscribed(accessToken, wabaId)) {
+        await dependencies.graph.subscribeApp(accessToken, wabaId);
+        subscribed = true;
+      }
       const connectedAt = now().toISOString();
-      await dependencies.registry.completeInstallation(inviteToken, {
+      const installation: PilotInstallationRecord = {
         tenantId: invite.tenantId,
         wabaId,
         phoneNumberId,
-        ...(phone.verifiedName ? { verifiedName: phone.verifiedName } : {}),
-        ...(phone.displayPhoneNumber ? { displayPhoneNumber: phone.displayPhoneNumber } : {}),
+        ...(phone.verifiedName || previous?.verifiedName ? { verifiedName: phone.verifiedName ?? previous?.verifiedName } : {}),
+        ...(phone.displayPhoneNumber || previous?.displayPhoneNumber ? { displayPhoneNumber: phone.displayPhoneNumber ?? previous?.displayPhoneNumber } : {}),
         encryptedAccessToken: await encryptPilotSecret(accessToken, env.INSTALLATION_ENCRYPTION_KEY),
         ...(token.expiresAt ? { tokenExpiresAt: token.expiresAt } : {}),
-        connectedAt,
-        webhookSubscribedAt: connectedAt,
+        connectedAt: previous?.connectedAt ?? connectedAt,
+        webhookSubscribedAt: previous && !subscribed ? previous.webhookSubscribedAt : connectedAt,
         status: "connected"
-      }, now());
+      };
+      if (pin) {
+        if (!await dependencies.registry.completeReauthorization(inviteToken, installation, now())) {
+          return jsonError("PILOT_REAUTHORIZATION_SUPERSEDED", "Another authorization already updated this connection. Check its current status before requesting a new reconnect invitation.", 409);
+        }
+      } else await dependencies.registry.completeInstallation(inviteToken, installation, now());
       const authorizationSession = await dependencies.createAuthorizationSession(
         invite.tenantId,
         ["openid", ...SUPPORTED_WHATSAPP_MCP_SCOPES]
@@ -193,6 +212,7 @@ export function createPilotOnboardingHandler(
         tenantId: invite.tenantId,
         providerAssetsBound: true,
         oauthReady: true,
+        ...(pin ? { reauthorized: true } : {}),
         nextStep: "Add the pilot MCP URL in ChatGPT from this browser to finish the scoped connection."
       }, {
         headers: successfulSignupHeaders(authorizationSession.rawSession, authorizationSession.expiresAt)
@@ -213,7 +233,9 @@ export function createPilotOnboardingHandler(
         }
       }
       const code = error instanceof MetaGraphError ? error.code : "PILOT_INSTALLATION_FAILED";
-      return jsonError(code, "WhatsApp authorization could not be completed. No MCP access was enabled.", 502);
+      return jsonError(code, invite.reauthorization
+        ? "The authorization renewal could not be confirmed. Check the existing connection status before trying again."
+        : "WhatsApp authorization could not be completed. No MCP access was enabled.", 502);
     }
   }
 
@@ -305,6 +327,24 @@ export function createPilotOnboardingHandler(
       const code = error instanceof MetaGraphError ? error.code : "WHATSAPP_SANDBOX_CONNECTION_FAILED";
       return jsonError(code, "The sandbox connection could not be completed. No MCP access was enabled.", 502);
     }
+  }
+
+  async function createReauthorizationInvitation(request: Request, tenantId: string): Promise<Response> {
+    if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
+    const body = await readBoundedJson(request);
+    const label = readString(body?.label);
+    const hours = body?.expiresInHours === undefined ? 24 : body.expiresInHours;
+    if (!label || label.length > 120 || typeof hours !== "number" || !Number.isInteger(hours) || hours < 1 || hours > 24) {
+      return jsonError("PILOT_REAUTHORIZATION_INVALID", "Provide a label and an expiry from 1 to 24 hours.", 400);
+    }
+    const existing = await dependencies.registry.getInstallation(tenantId);
+    if (!existing || existing.status !== "connected") return jsonError("PILOT_INSTALLATION_NOT_FOUND", "An existing connected installation is required.", 404);
+    const expiresAt = new Date(now().getTime() + hours * 3600000).toISOString();
+    const token = await dependencies.registry.createReauthorizationInvite({ tenantId, label, expiresAt }, now());
+    return Response.json({ ok: true, tenantId, purpose: "reauthorization", expiresAt,
+      invitationUrl: `${publicOrigin}/pilot/whatsapp/connect?invite=${encodeURIComponent(token)}`,
+      disclosure: "Renew authorization for the same account and number. Existing data and grants remain in place."
+    }, { status: 201, headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8" }) });
   }
 
   async function createInvitation(request: Request, rotate = false): Promise<Response> {
@@ -635,6 +675,7 @@ function renderSignupPage(input: {
   configId: string;
   graphVersion: string;
   sessionVersion: string;
+  reauthorization?: boolean;
 }): Response {
   const nonce = randomBase64Url(18);
   const config = JSON.stringify({
@@ -642,21 +683,25 @@ function renderSignupPage(input: {
     appId: input.appId,
     configId: input.configId,
     graphVersion: input.graphVersion,
-    sessionVersion: input.sessionVersion
+    sessionVersion: input.sessionVersion,
+    reauthorization: Boolean(input.reauthorization),
+    extras: input.reauthorization
+      ? { version: "v3", features: [{ name: "app_only_install" }], sessionInfoVersion: "3" }
+      : { sessionInfoVersion: input.sessionVersion }
   }).replace(/</g, "\\u003c");
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connect WhatsApp · Morning ARP</title>
 <style nonce="${nonce}">:root{color-scheme:dark}body{margin:0;background:#0c1015;color:#f5f7fa;font:16px/1.5 system-ui,sans-serif}.shell{max-width:720px;margin:8vh auto;padding:32px}.card{background:#151b23;border:1px solid #2a3442;border-radius:18px;padding:32px}h1{font-size:2rem;margin:.2rem 0 1rem}.eyebrow{color:#64d7ba;text-transform:uppercase;letter-spacing:.12em;font-weight:700;font-size:.78rem}.muted{color:#a9b4c2}button{background:#64d7ba;color:#07120f;border:0;border-radius:10px;padding:14px 20px;font-weight:800;font-size:1rem;cursor:pointer}button:disabled{opacity:.55;cursor:wait}.status{min-height:1.5em;margin-top:16px}.fine{font-size:.86rem;color:#8693a3;margin-top:24px}</style></head>
-<body><main class="shell"><section class="card"><div class="eyebrow">Invited WhatsApp pilot</div><h1>Connect ${escapeHtml(input.label)}</h1>
-<p>Sign in to Meta and choose only the business-owned WhatsApp account and phone number approved for this pilot. Morning never asks for your Meta password, MFA code, or permanent access token.</p>
+<body><main class="shell"><section class="card"><div class="eyebrow">Invited WhatsApp pilot</div><h1>${input.reauthorization ? "Reconnect" : "Connect"} ${escapeHtml(input.label)}</h1>
+<p>${input.reauthorization ? "Sign in to Meta and select the existing WhatsApp business account. This renews the same connection without registering another number." : "Sign in to Meta and choose only the business-owned WhatsApp account and phone number approved for this pilot."} Morning never asks for your Meta password, MFA code, or permanent access token.</p>
 <ul class="muted"><li>Your WhatsApp assets remain owned by your business.</li><li>The MCP receives tenant-isolated access to connection status, policy guidance, structured conversation history, replies inside the verified 24-hour window, and approved templates.</li><li>Every send is still checked against the connected account, recipient consent, service window, template approval, and idempotency state.</li><li>You can disconnect and request deletion through the pilot support process.</li></ul>
 <button id="connect" type="button" disabled>Loading Meta authorization…</button><p id="status" class="status" role="status" aria-live="polite"></p>
 <p class="fine">This one-time invitation is limited to the closed development pilot. It does not authorize campaigns, bulk messaging, or unrelated use.</p></section></main>
 <div id="fb-root"></div><script nonce="${nonce}">const cfg=${config};let assets=null;let authCode=null;let completionStarted=false;const button=document.getElementById('connect');const status=document.getElementById('status');
-function setStatus(message){status.textContent=message}function finish(){if(completionStarted||!assets||!authCode)return;completionStarted=true;button.disabled=true;setStatus('Securing your WhatsApp connection…');fetch('/pilot/whatsapp/callback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({state:cfg.state,code:authCode,wabaId:assets.wabaId,phoneNumberId:assets.phoneNumberId})}).then(async response=>{const body=await response.json();if(!response.ok){if(body?.error?.code==='PILOT_WABA_ALREADY_CONNECTED'){setStatus(body.error.message);return}throw new Error(body?.error?.message||'Connection failed.')}setStatus('WhatsApp is connected for the supervised pilot. You may close this page.');button.hidden=true}).catch(()=>{setStatus('We could not confirm the connection. Do not retry this one-time authorization. Contact support so we can check its status and help you continue.');button.disabled=true})}
-window.addEventListener('message',event=>{if(completionStarted||event.origin!=='https://www.facebook.com'&&event.origin!=='https://web.facebook.com')return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data)}catch{return}if(data?.type!=='WA_EMBEDDED_SIGNUP')return;if(data.event==='FINISH'){const wabaId=data.data?.waba_id;const phoneNumberId=data.data?.phone_number_id;if(/^\\d{3,32}$/.test(wabaId)&&/^\\d{3,32}$/.test(phoneNumberId)){assets={wabaId,phoneNumberId};finish()}}else if(data.event==='CANCEL'){setStatus('Meta signup was cancelled. Nothing was connected.');button.disabled=false}else if(data.event==='ERROR'){setStatus('Meta could not complete signup. Nothing was connected.');button.disabled=false}});
-window.fbAsyncInit=()=>{FB.init({appId:cfg.appId,cookie:false,xfbml:false,version:cfg.graphVersion});button.disabled=false;button.textContent='Continue with Meta';button.addEventListener('click',()=>{if(completionStarted)return;assets=null;authCode=null;button.disabled=true;setStatus('Waiting for Meta authorization…');FB.login(response=>{if(completionStarted)return;authCode=response?.authResponse?.code||null;if(!authCode){setStatus('Meta authorization was not completed. Nothing was connected.');button.disabled=false;return}finish()},{config_id:cfg.configId,response_type:'code',override_default_response_type:true,extras:{sessionInfoVersion:cfg.sessionVersion}})},{once:false})};
+function setStatus(message){status.textContent=message}function finish(){if(completionStarted||!assets||!authCode)return;completionStarted=true;button.disabled=true;setStatus('Securing your WhatsApp connection…');fetch('/pilot/whatsapp/callback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({state:cfg.state,code:authCode,wabaId:assets.wabaId,phoneNumberId:assets.phoneNumberId})}).then(async response=>{const body=await response.json();if(!response.ok){if(body?.error?.code==='PILOT_SESSION_INVALID'){setStatus('This authorization session expired or was replaced by another tab. Reload this page to start a fresh Meta authorization; the existing connection is unchanged.');return}if(['PILOT_WABA_ALREADY_CONNECTED','PILOT_REAUTHORIZATION_ASSET_MISMATCH','PILOT_REAUTHORIZATION_SUPERSEDED'].includes(body?.error?.code)){setStatus(body.error.message);return}throw new Error(body?.error?.message||'Connection failed.')}setStatus(cfg.reauthorization?'Authorization renewed for your existing WhatsApp connection. You may close this page.':'WhatsApp is connected for the supervised pilot. You may close this page.');button.hidden=true}).catch(()=>{setStatus('We could not confirm the connection. Do not retry this one-time authorization. Contact support so we can check its status and help you continue.');button.disabled=true})}
+window.addEventListener('message',event=>{if(completionStarted||event.origin!=='https://www.facebook.com'&&event.origin!=='https://web.facebook.com')return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data)}catch{return}if(data?.type!=='WA_EMBEDDED_SIGNUP')return;if(data.event===(cfg.reauthorization?'FINISH_GRANT_ONLY_API_ACCESS':'FINISH')){const wabaId=data.data?.waba_id;const phoneNumberId=data.data?.phone_number_id;if(/^\\d{3,32}$/.test(wabaId)&&/^\\d{3,32}$/.test(phoneNumberId)){assets={wabaId,phoneNumberId};finish()}}else if(data.event==='CANCEL'){setStatus('Meta signup was cancelled. Nothing was connected.');button.disabled=false}else if(data.event==='ERROR'){setStatus('Meta could not complete signup. Nothing was connected.');button.disabled=false}});
+window.fbAsyncInit=()=>{FB.init({appId:cfg.appId,cookie:false,xfbml:false,version:cfg.graphVersion});button.disabled=false;button.textContent='Continue with Meta';button.addEventListener('click',()=>{if(completionStarted)return;assets=null;authCode=null;button.disabled=true;setStatus('Waiting for Meta authorization…');FB.login(response=>{if(completionStarted)return;authCode=response?.authResponse?.code||null;if(!authCode){setStatus('Meta authorization was not completed. Nothing was connected.');button.disabled=false;return}finish()},{config_id:cfg.configId,response_type:'code',override_default_response_type:true,extras:cfg.extras})},{once:false})};
 const sdk=document.createElement('script');sdk.src='https://connect.facebook.net/en_US/sdk.js';sdk.async=true;sdk.defer=true;sdk.crossOrigin='anonymous';sdk.nonce='${nonce}';document.body.appendChild(sdk);</script></body></html>`;
   return new Response(html, {
     headers: securityHeaders({

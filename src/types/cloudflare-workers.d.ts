@@ -2,6 +2,7 @@ declare module "cloudflare:workers" {
   export type SqlStorageValue = ArrayBuffer | string | number | null;
 
   export interface SqlStorageCursor<T> extends Iterable<T> {
+    readonly rowsWritten: number;
     toArray(): T[];
     one(): T;
   }

@@ -7,7 +7,7 @@ const [command, baseUrl, ...argumentsAfterOrigin] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
 if (!adminToken || !command || !baseUrl) {
-  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|review-invite|review-reinvite|status|provider-status|account-profile|set-account-profile|conversations|history|dispatches|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
+  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|review-invite|review-reinvite|reauthorize-invite|status|provider-status|account-profile|set-account-profile|conversations|history|dispatches|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
 }
 
 const origin = new URL(baseUrl).origin;
@@ -75,6 +75,13 @@ if (command === "sandbox-connect") {
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({ tenantId, label, cohortRole, expiresInHours: reviewInvitation ? 24 * 400 : 24,
       ...(reviewInvitation ? { purpose: "meta_app_review" } : {}) })
+  });
+} else if (command === "reauthorize-invite") {
+  const [tenantId, label] = argumentsAfterOrigin;
+  if (!tenantId || !label || argumentsAfterOrigin.length !== 2) fail("reauthorize-invite requires the existing tenant ID and a label.");
+  response = await fetch(`${origin}/admin/pilot/installations/${encodeURIComponent(tenantId)}/reauthorization-invitations`, {
+    method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ label, expiresInHours: 24 })
   });
 } else if (command === "account-profile" || command === "set-account-profile") {
   const [tenantId, path] = argumentsAfterOrigin;

@@ -11,6 +11,7 @@ export type PilotInviteRecord = {
   createdAt: string;
   expiresAt: string;
   usedAt?: string;
+  reauthorization?: { wabaId: string; phoneNumberId: string; credentialIv: string };
 };
 
 export type EncryptedMetaCredential = {
@@ -45,6 +46,7 @@ type InviteRow = {
   created_at: string;
   expires_at: string;
   used_at: string | null;
+  reauthorization_json: string | null;
 };
 type InstallationRow = {
   tenant_id: string;
@@ -79,6 +81,7 @@ export type PilotInstallationObjectStub = {
   consumeSession(stateHash: string, now: string): Promise<PilotInviteRecord | null>;
   markInviteUsed(usedAt: string): Promise<void>;
   putInstallation(record: PilotInstallationRecord): Promise<void>;
+  replaceInstallationCredential(record: PilotInstallationRecord, expectedIv: string): Promise<boolean>;
   getInstallation(): Promise<PilotInstallationRecord | null>;
   markInstallationDisconnected(disconnectedAt: string): Promise<void>;
   deleteInstallation(): Promise<void>;
@@ -126,6 +129,11 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     assertCanonicalIso(record.createdAt);
     assertCanonicalIso(record.expiresAt);
     if (record.expiresAt <= record.createdAt) throw new Error("Invite expiry must be after creation");
+    if (record.reauthorization) {
+      validateProviderId(record.reauthorization.wabaId);
+      validateProviderId(record.reauthorization.phoneNumberId);
+      if (!/^[A-Za-z0-9_-]{1,128}$/u.test(record.reauthorization.credentialIv)) throw new Error("Invalid credential revision");
+    }
     const existing = this.ctx.storage.sql.exec<InviteRow>("SELECT * FROM invite LIMIT 1").toArray()[0];
     if (existing && !existing.used_at && existing.expires_at > record.createdAt) {
       throw new Error("Invite token already exists");
@@ -133,13 +141,14 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM invite");
     this.ctx.storage.sql.exec("DELETE FROM sessions");
     this.ctx.storage.sql.exec(
-      `INSERT INTO invite (tenant_id, label, cohort_role, created_at, expires_at, used_at)
-       VALUES (?, ?, ?, ?, ?, NULL)`,
+      `INSERT INTO invite (tenant_id, label, cohort_role, created_at, expires_at, used_at, reauthorization_json)
+       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
       record.tenantId,
       record.label,
       record.cohortRole,
       record.createdAt,
-      record.expiresAt
+      record.expiresAt,
+      record.reauthorization ? JSON.stringify(record.reauthorization) : null
     );
   }
 
@@ -213,6 +222,22 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
       record.webhookSubscribedAt,
       record.status
     );
+  }
+
+  async replaceInstallationCredential(record: PilotInstallationRecord, expectedIv: string): Promise<boolean> {
+    validateInstallation(record);
+    if (record.encryptedAccessToken.iv === expectedIv) return false;
+    // The nonce is an opaque credential revision. The conditional SQL update
+    // prevents a delayed authorization from replacing a newer credential.
+    const result = this.ctx.storage.sql.exec(`UPDATE installation SET
+      access_token_ciphertext = ?, access_token_iv = ?, access_token_version = ?,
+      token_expires_at = ?, verified_name = ?, display_phone_number = ?, webhook_subscribed_at = ?
+      WHERE tenant_id = ? AND waba_id = ? AND phone_number_id = ?
+      AND access_token_iv = ? AND status = 'connected'`,
+      record.encryptedAccessToken.ciphertext, record.encryptedAccessToken.iv, record.encryptedAccessToken.version,
+      record.tokenExpiresAt ?? null, record.verifiedName ?? null, record.displayPhoneNumber ?? null, record.webhookSubscribedAt,
+      record.tenantId, record.wabaId, record.phoneNumberId, expectedIv);
+    return result.rowsWritten === 1;
   }
 
   async getInstallation(): Promise<PilotInstallationRecord | null> {
@@ -493,6 +518,10 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     if (!cohortColumns.some((column) => column.name === "invite_hash")) {
       this.ctx.storage.sql.exec("ALTER TABLE cohort_seats ADD COLUMN invite_hash TEXT");
     }
+    const inviteColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(invite)").toArray();
+    if (!inviteColumns.some(column => column.name === "reauthorization_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE invite ADD COLUMN reauthorization_json TEXT");
+    }
   }
 }
 
@@ -517,6 +546,32 @@ export function createPilotInstallationRegistry(
   }
 
   return {
+    async createReauthorizationInvite(input: { tenantId: string; label: string; expiresAt: string }, now = new Date()): Promise<string> {
+      const installation = await this.getInstallation(input.tenantId);
+      if (!installation || installation.status !== "connected") throw new Error("Connected installation required");
+      const rawToken = randomBase64Url(32);
+      const hash = await sha256Base64Url(rawToken);
+      const internal = await namespace.getByName(cohortObjectName).listPilotSeats("internal");
+      const cohortRole = internal.some(seat => seat.tenant_id === input.tenantId) ? "internal" : "client";
+      await namespace.getByName(`invite:${hash}`).createInvite({ ...input, cohortRole, createdAt: now.toISOString(),
+        reauthorization: { wabaId: installation.wabaId, phoneNumberId: installation.phoneNumberId,
+          credentialIv: installation.encryptedAccessToken.iv } });
+      // This renews an existing connection; it does not reserve another seat.
+      return rawToken;
+    },
+
+    async completeReauthorization(rawToken: string, installation: PilotInstallationRecord, now = new Date()): Promise<boolean> {
+      const hash = await sha256Base64Url(rawToken);
+      const invite = await namespace.getByName(`invite:${hash}`).getInvite(now.toISOString());
+      const pin = invite?.reauthorization;
+      if (!invite || !pin || invite.tenantId !== installation.tenantId || pin.wabaId !== installation.wabaId ||
+          pin.phoneNumberId !== installation.phoneNumberId) return false;
+      if (!await namespace.getByName(`tenant:${installation.tenantId}`)
+        .replaceInstallationCredential(installation, pin.credentialIv)) return false;
+      await namespace.getByName(`invite:${hash}`).markInviteUsed(now.toISOString());
+      return true;
+    },
+
     async createInvite(input: {
       tenantId: string;
       label: string;
@@ -717,7 +772,8 @@ function mapInvite(row: InviteRow): PilotInviteRecord {
     cohortRole: row.cohort_role,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
-    ...(row.used_at ? { usedAt: row.used_at } : {})
+    ...(row.used_at ? { usedAt: row.used_at } : {}),
+    ...(row.reauthorization_json ? { reauthorization: JSON.parse(row.reauthorization_json) as NonNullable<PilotInviteRecord["reauthorization"]> } : {})
   };
 }
 
