@@ -1,7 +1,9 @@
 # Meta review processor register
 
-Prepared 25 October 2026 (America/Bogota). This is the evidence and unresolved
-mapping for the draft, not a submitted attestation or a residency guarantee.
+Prepared 25 October 2026 (America/Bogota). This records the public-source draft
+basis, not a submitted attestation or a residency guarantee. Daniel directed
+using applicable public vendor information; a custom vendor reply is not a
+prerequisite. Both prepared vendor emails remain unsent and held.
 
 ## Current direct processing
 
@@ -35,24 +37,32 @@ they do not establish the actual location of this application's records.
 Edge execution must be considered separately from affiliate headquarters.
 
 The public network page currently lists 348 cities across 133 distinct
-country/territory codes. That marketing coverage is not an attested list of
-countries processing this tenant. In particular, China Network is a separate
-service; do not silently include or exclude territories without checking the
-applicable product. A complete network list is not a replacement for the
-processing disclosure.
+country/territory codes. The draft combines the possible global edge footprint
+with published developer-platform and support geography, including the EEA.
+Mainland China Network is a separate service and is not enabled for this Workers
+deployment; it is excluded, while Hong Kong and Macao remain separate listed
+network locations. Adding EEA locations absent from the edge-city list gives
+134 selected country/territory entries. This is a conservative possible
+footprint, not a claim that every record visits every location.
 
 For our Colombian consumer account, the applicable geographic privacy-policy
 reference is the rest-of-world policy, not the U.S.-resident policy. It says
 processing can occur in the U.S. and other vendor/affiliate territories. The
-Business/API subprocessor list cannot by itself establish the consumer
-subscription's exhaustive countries, retention or training controls.
+Business/API subprocessor list supplies 29 explicitly enumerated infrastructure
+and support countries as broader public company geography for the draft.
+The reviewer note explicitly identifies the table's product scope. It is not
+presented as the consumer contract or a consumer-only exhaustive routing
+guarantee; its retention, training and regional controls are not inferred for
+our subscription.
 
-Meta's form requires countries including remote access. The complete
-country selections are therefore **not yet certified or saved**. Do not label
-the draft complete with a headquarters-only list. This missing disclosure does
-not itself require buying a residency product, changing the working runtime,
-or imposing a new customer restriction. Resolve the vendor-to-form mapping,
-then save and independently read back the actual entries.
+Both entries are saved in Meta with the IT/cloud-storage-and-processing service
+category. Independent reopening reads back Cloudflare 134 entries and OpenAI
+29 entries. Meta's required-field validation marks Data handling 100%; this is
+draft completeness, not provider approval or a final owner attestation. The
+reviewer instructions retain the public sources and the product-scope/location
+qualifications. Source/code lists and readback evidence stay in protected
+operator evidence, not in public credentials or internal-dashboard links.
+No residency purchase or new customer restriction is required by this work.
 
 ## Reviewer access
 
