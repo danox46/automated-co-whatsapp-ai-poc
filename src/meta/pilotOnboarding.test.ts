@@ -186,12 +186,13 @@ function adminRequest(path: string, method: string, body?: unknown, token = "own
   });
 }
 
-async function signupBrowserFixture(callbackFetch: typeof fetch, reauthorization = false) {
+async function signupBrowserFixture(callbackFetch: typeof fetch, reauthorization = false, existingAccount = false) {
   const fixture = createFixture();
   if (reauthorization) await existingMorningFixture(fixture);
   const invitationResponse = await fixture.handler.fetch(adminRequest(
     reauthorization ? "/admin/pilot/installations/existing-morning/reauthorization-invitations" : "/admin/pilot/invitations", "POST",
-    { tenantId: "review-browser", label: "Morning review", cohortRole: "client" }
+    { tenantId: "review-browser", label: "Morning review", cohortRole: "client",
+      ...(existingAccount ? { onboarding: { flow: "existing_account" } } : {}) }
   ));
   const invitation = await invitationResponse?.json() as { invitationUrl: string };
   const redirect = await fixture.handler.fetch(new Request(invitation.invitationUrl));
@@ -229,7 +230,7 @@ async function signupBrowserFixture(callbackFetch: typeof fetch, reauthorization
   return {
     button, status, click, loginOptions,
     login: () => completeLogin({ authResponse: { code: "A2345678901234567890" } }),
-    finish: (event = reauthorization ? "FINISH_GRANT_ONLY_API_ACCESS" : "FINISH") => receive({ origin: "https://www.facebook.com", data: {
+    finish: (event = reauthorization || existingAccount ? "FINISH_GRANT_ONLY_API_ACCESS" : "FINISH") => receive({ origin: "https://www.facebook.com", data: {
       type: "WA_EMBEDDED_SIGNUP", event,
       data: { waba_id: "100200300", phone_number_id: "400500600" }
     } }),
@@ -274,6 +275,99 @@ async function reauthorizationFixture() {
         phoneNumberId: installation.phoneNumberId, ...overrides }) }));
   } };
 }
+
+
+async function existingIntegrationFixture(pinned = true) {
+  const { fixture, installation } = await existingMorningFixture();
+  const assets = { wabaId: "700800900", phoneNumberId: installation.phoneNumberId };
+  const invitation = await (await fixture.handler.fetch(adminRequest("/admin/pilot/invitations", "POST", {
+    tenantId: "second-integration", label: "Existing phone integration", cohortRole: "client",
+    onboarding: { flow: "existing_account", ...(pinned ? { expectedAssets: assets } : {}) }
+  })))!.json() as { invitationUrl: string };
+  const redirect = await fixture.handler.fetch(new Request(invitation.invitationUrl));
+  const cookie = redirect!.headers.get("set-cookie")!.split(";")[0];
+  const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`, { headers: { cookie } }));
+  const html = await page!.text();
+  const cfg = JSON.parse(/const cfg=(\{.*?\});let/u.exec(html)![1]);
+  return { fixture, installation, assets, html, async submit(overrides: Record<string, unknown> = {}) {
+    return fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/callback`, { method: "POST",
+      headers: { cookie, Origin: origin, "Content-Type": "application/json" },
+      body: JSON.stringify({ code: "A2345678901234567890", state: cfg.state, ...assets, ...overrides }) }));
+  } };
+}
+
+describe("existing-phone integration onboarding", () => {
+  it("binds a separate Messaging Account on the same phone without renewing the original installation", async () => {
+    const f = await existingIntegrationFixture();
+    expect(f.html).toContain("app_only_install");
+    expect(f.html).not.toContain(f.assets.wabaId);
+    expect(f.html).not.toContain(f.assets.phoneNumberId);
+    expect((await f.submit())?.status).toBe(200);
+    expect(f.fixture.installations.get("existing-morning")).toEqual(f.installation);
+    expect(f.fixture.installations.get("second-integration")).toMatchObject({ ...f.assets, status: "connected" });
+    expect(f.fixture.graph.verifyPhoneBelongsToWaba).toHaveBeenCalledWith("provider-access-token", f.assets.wabaId, f.assets.phoneNumberId);
+    expect(f.fixture.graph.subscribeApp).toHaveBeenCalledWith("provider-access-token", f.assets.wabaId);
+    expect(f.fixture.createAuthorizationSession).toHaveBeenCalledWith("second-integration", expect.any(Array));
+    expect(f.fixture.deleteConversationData).not.toHaveBeenCalled();
+    expect(f.fixture.revokeAuthorizationSessions).not.toHaveBeenCalled();
+    expect(f.fixture.graph.unsubscribeApp).not.toHaveBeenCalled();
+    expect((await f.submit())?.status).toBe(409);
+    expect(f.fixture.graph.exchangeEmbeddedSignupCode).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects either pinned-asset substitution before any provider exchange", async () => {
+    for (const wrong of [{ wabaId: "700800999" }, { phoneNumberId: "400500699" }]) {
+      const f = await existingIntegrationFixture();
+      const response = await f.submit(wrong);
+      expect(response?.status).toBe(409);
+      expect(await response!.text()).toContain("PILOT_ONBOARDING_ASSET_MISMATCH");
+      expect(f.fixture.graph.exchangeEmbeddedSignupCode).not.toHaveBeenCalled();
+      expect(f.fixture.installations.has("second-integration")).toBe(false);
+      expect(f.fixture.installations.get("existing-morning")).toEqual(f.installation);
+    }
+  });
+
+  it("supports unknown assets before consent but still requires actual provider membership and exclusive MA ownership", async () => {
+    const failure = await existingIntegrationFixture(false);
+    failure.fixture.graph.verifyPhoneBelongsToWaba.mockRejectedValueOnce(new Error("phone not in selected Messaging Account"));
+    expect((await failure.submit())?.status).toBe(502);
+    expect(failure.fixture.createAuthorizationSession).not.toHaveBeenCalled();
+    expect(failure.fixture.graph.subscribeApp).not.toHaveBeenCalled();
+    const conflict = await existingIntegrationFixture(false);
+    expect((await conflict.submit({ wabaId: conflict.installation.wabaId }))?.status).toBe(409);
+    expect(conflict.fixture.graph.subscribeApp).not.toHaveBeenCalled();
+    const success = await existingIntegrationFixture(false);
+    expect((await success.submit())?.status).toBe(200);
+    expect(success.fixture.installations.get("existing-morning")).toEqual(success.installation);
+  });
+
+  it("accepts only the app-only completion event for the new integration too", async () => {
+    const send = vi.fn(async () => Response.json({ ok: true }));
+    const browser = await signupBrowserFixture(send, false, true);
+    browser.click(); browser.login(); browser.finish("FINISH");
+    expect(send).not.toHaveBeenCalled();
+    expect(browser.loginOptions).toHaveBeenCalledWith(expect.objectContaining({ extras: {
+      version: "v3", features: [{ name: "app_only_install" }], sessionInfoVersion: "3"
+    } }));
+    browser.finish();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(browser.status.textContent).toContain("connected for the supervised pilot"));
+    expect(browser.status.textContent).not.toContain("renewed");
+  });
+
+  it("keeps issuance admin-only and validates the optional server-side binding", async () => {
+    const f = createFixture();
+    const body = { tenantId: "second-integration", label: "Integration", cohortRole: "client" };
+    expect((await f.handler.fetch(adminRequest("/admin/pilot/invitations", "POST", { ...body,
+      onboarding: { flow: "existing_account" } }, "wrong")))?.status).toBe(401);
+    for (const onboarding of [null, [], "existing_account", { flow: "unsupported" },
+      { flow: "existing_account", expectedAssets: { wabaId: "123" } },
+      { flow: "existing_account", expectedAssets: { wabaId: "123", phoneNumberId: "bad" } },
+      { flow: "existing_account", expectedAssets: { wabaId: "123", phoneNumberId: "456", override: true } }]) {
+      expect((await f.handler.fetch(adminRequest("/admin/pilot/invitations", "POST", { ...body, onboarding })))?.status).toBe(400);
+    }
+  });
+});
 
 describe("closed-pilot onboarding", () => {
   it("renews the same installation without losing history, original connection date or existing grants", async () => {

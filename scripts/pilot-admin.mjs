@@ -7,7 +7,7 @@ const [command, baseUrl, ...argumentsAfterOrigin] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
 if (!adminToken || !command || !baseUrl) {
-  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|review-invite|review-reinvite|reauthorize-invite|status|provider-status|account-profile|set-account-profile|conversations|history|dispatches|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
+  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|review-invite|review-reinvite|existing-invite|existing-reinvite|reauthorize-invite|status|provider-status|account-profile|set-account-profile|conversations|history|dispatches|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
 }
 
 const origin = new URL(baseUrl).origin;
@@ -75,6 +75,17 @@ if (command === "sandbox-connect") {
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({ tenantId, label, cohortRole, expiresInHours: reviewInvitation ? 24 * 400 : 24,
       ...(reviewInvitation ? { purpose: "meta_app_review" } : {}) })
+  });
+} else if (command === "existing-invite" || command === "existing-reinvite") {
+  const [tenantId, label, wabaId, phoneNumberId] = argumentsAfterOrigin;
+  if (!tenantId || !label || ![2, 4].includes(argumentsAfterOrigin.length) ||
+      (wabaId && (!/^\d{3,32}$/u.test(wabaId) || !/^\d{3,32}$/u.test(phoneNumberId)))) {
+    fail(`${command} requires a fresh tenant ID and label, optionally followed by the exact Messaging Account and phone number IDs.`);
+  }
+  response = await fetch(`${origin}/admin/pilot/invitations${command === "existing-reinvite" ? "/rotate" : ""}`, {
+    method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ tenantId, label, cohortRole: "client", expiresInHours: 24,
+      onboarding: { flow: "existing_account", ...(wabaId ? { expectedAssets: { wabaId, phoneNumberId } } : {}) } })
   });
 } else if (command === "reauthorize-invite") {
   const [tenantId, label] = argumentsAfterOrigin;

@@ -12,6 +12,7 @@ export type PilotInviteRecord = {
   expiresAt: string;
   usedAt?: string;
   reauthorization?: { wabaId: string; phoneNumberId: string; credentialIv: string };
+  onboarding?: { flow: "existing_account"; expectedAssets?: { wabaId: string; phoneNumberId: string } };
 };
 
 export type EncryptedMetaCredential = {
@@ -47,6 +48,7 @@ type InviteRow = {
   expires_at: string;
   used_at: string | null;
   reauthorization_json: string | null;
+  onboarding_json: string | null;
 };
 type InstallationRow = {
   tenant_id: string;
@@ -134,6 +136,13 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
       validateProviderId(record.reauthorization.phoneNumberId);
       if (!/^[A-Za-z0-9_-]{1,128}$/u.test(record.reauthorization.credentialIv)) throw new Error("Invalid credential revision");
     }
+    if (record.onboarding) {
+      if (record.reauthorization || record.onboarding.flow !== "existing_account") throw new Error("Invalid onboarding flow");
+      if (record.onboarding.expectedAssets) {
+        validateProviderId(record.onboarding.expectedAssets.wabaId);
+        validateProviderId(record.onboarding.expectedAssets.phoneNumberId);
+      }
+    }
     const existing = this.ctx.storage.sql.exec<InviteRow>("SELECT * FROM invite LIMIT 1").toArray()[0];
     if (existing && !existing.used_at && existing.expires_at > record.createdAt) {
       throw new Error("Invite token already exists");
@@ -141,14 +150,15 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM invite");
     this.ctx.storage.sql.exec("DELETE FROM sessions");
     this.ctx.storage.sql.exec(
-      `INSERT INTO invite (tenant_id, label, cohort_role, created_at, expires_at, used_at, reauthorization_json)
-       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+      `INSERT INTO invite (tenant_id, label, cohort_role, created_at, expires_at, used_at, reauthorization_json, onboarding_json)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
       record.tenantId,
       record.label,
       record.cohortRole,
       record.createdAt,
       record.expiresAt,
-      record.reauthorization ? JSON.stringify(record.reauthorization) : null
+      record.reauthorization ? JSON.stringify(record.reauthorization) : null,
+      record.onboarding ? JSON.stringify(record.onboarding) : null
     );
   }
 
@@ -522,6 +532,9 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     if (!inviteColumns.some(column => column.name === "reauthorization_json")) {
       this.ctx.storage.sql.exec("ALTER TABLE invite ADD COLUMN reauthorization_json TEXT");
     }
+    if (!inviteColumns.some(column => column.name === "onboarding_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE invite ADD COLUMN onboarding_json TEXT");
+    }
   }
 }
 
@@ -577,6 +590,7 @@ export function createPilotInstallationRegistry(
       label: string;
       cohortRole: "internal" | "client";
       expiresAt: string;
+      onboarding?: PilotInviteRecord["onboarding"];
     }, now = new Date()): Promise<string> {
       const rawToken = randomBase64Url(32);
       const hash = await sha256Base64Url(rawToken);
@@ -608,6 +622,7 @@ export function createPilotInstallationRegistry(
       label: string;
       cohortRole: "internal" | "client";
       expiresAt: string;
+      onboarding?: PilotInviteRecord["onboarding"];
     }, now = new Date()): Promise<string> {
       const rawToken = randomBase64Url(32);
       const hash = await sha256Base64Url(rawToken);
@@ -773,7 +788,8 @@ function mapInvite(row: InviteRow): PilotInviteRecord {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     ...(row.used_at ? { usedAt: row.used_at } : {}),
-    ...(row.reauthorization_json ? { reauthorization: JSON.parse(row.reauthorization_json) as NonNullable<PilotInviteRecord["reauthorization"]> } : {})
+    ...(row.reauthorization_json ? { reauthorization: JSON.parse(row.reauthorization_json) as NonNullable<PilotInviteRecord["reauthorization"]> } : {}),
+    ...(row.onboarding_json ? { onboarding: JSON.parse(row.onboarding_json) as NonNullable<PilotInviteRecord["onboarding"]> } : {})
   };
 }
 
