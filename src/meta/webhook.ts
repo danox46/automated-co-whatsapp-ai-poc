@@ -85,7 +85,8 @@ async function handleVerification(request: Request, env: MetaWebhookEnv): Promis
 async function handleEvent(
   request: Request,
   env: MetaWebhookEnv,
-  persistence?: MetaConversationPersistence | MetaConversationPersistenceResolver
+  persistence?: MetaConversationPersistence | MetaConversationPersistenceResolver,
+  accountUpdates?: (payload: unknown) => Promise<void>
 ): Promise<Response> {
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > MAX_WEBHOOK_BODY_BYTES) {
@@ -121,12 +122,15 @@ async function handleEvent(
     return new Response("Unsupported event", { status: 400, headers: noStoreHeaders() });
   }
 
-  if (persistence) {
+  if (persistence || accountUpdates) {
     try {
-      const resolved = typeof persistence === "function"
-        ? await persistence(payload)
-        : persistence;
-      if (resolved) await persistMetaConversationEvents(payload, resolved);
+      if (accountUpdates) await accountUpdates(payload);
+      if (persistence) {
+        const resolved = typeof persistence === "function"
+          ? await persistence(payload)
+          : persistence;
+        if (resolved) await persistMetaConversationEvents(payload, resolved);
+      }
     } catch {
       return Response.json(
         { received: false, retryable: true },
@@ -147,13 +151,14 @@ async function handleEvent(
 export async function handleMetaWhatsAppWebhook(
   request: Request,
   env: MetaWebhookEnv,
-  persistence?: MetaConversationPersistence | MetaConversationPersistenceResolver
+  persistence?: MetaConversationPersistence | MetaConversationPersistenceResolver,
+  accountUpdates?: (payload: unknown) => Promise<void>
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== META_WHATSAPP_WEBHOOK_PATH) return null;
 
   if (request.method === "GET") return handleVerification(request, env);
-  if (request.method === "POST") return handleEvent(request, env, persistence);
+  if (request.method === "POST") return handleEvent(request, env, persistence, accountUpdates);
 
   return new Response("Method not allowed", {
     status: 405,
@@ -165,13 +170,18 @@ export type MetaConversationPersistenceResolver = (
   payload: unknown
 ) => Promise<MetaConversationPersistence | null>;
 
-export function metaWebhookWabaIds(payload: unknown): string[] {
+export function metaWebhookWabaIds(payload: unknown, field?: string): string[] {
   if (typeof payload !== "object" || payload === null) return [];
   const entries = Array.isArray((payload as { entry?: unknown }).entry)
     ? (payload as { entry: unknown[] }).entry
     : [];
   const ids = entries.flatMap((entry) => {
     if (typeof entry !== "object" || entry === null) return [];
+    if (field) {
+      const changes = (entry as { changes?: unknown }).changes;
+      if (!Array.isArray(changes) || !changes.some(change =>
+        typeof change === "object" && change !== null && (change as { field?: unknown }).field === field)) return [];
+    }
     const id = (entry as { id?: unknown }).id;
     return typeof id === "string" && /^\d{3,32}$/u.test(id) ? [id] : [];
   });

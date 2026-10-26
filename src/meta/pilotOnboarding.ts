@@ -407,7 +407,7 @@ export function createPilotOnboardingHandler(
     if (!await isAdmin(request, env.PILOT_ADMIN_TOKEN)) return adminUnauthorized();
     const installation = await dependencies.registry.getInstallation(tenantId);
     if (!installation) return jsonError("PILOT_INSTALLATION_NOT_FOUND", "No installation exists for this pilot tenant.", 404);
-    return Response.json({ ok: true, installation: {
+    return Response.json({ ok: true, accountUpdates: await dependencies.registry.getAccountUpdates(installation.wabaId, now()), installation: {
       ...dependencies.registry.sanitize(installation),
       ...(env.CONVERSATION_REF_SECRET ? { installationRef: await opaqueInstallationRef(
         installation.tenantId, installation.wabaId, installation.phoneNumberId, env.CONVERSATION_REF_SECRET

@@ -1,5 +1,6 @@
 import { DurableObject, type DurableObjectState } from "cloudflare:workers";
 import { randomBase64Url, sha256Base64Url } from "./pilotCrypto.js";
+import { isKnownAccountUpdateEvent, type MetaAccountUpdate, type StoredAccountUpdate } from "./accountUpdates.js";
 import { pilotAccountProfileCommandSchema, describePilotAccountProfile,
   type PilotAccountProfileCommand, type PilotAccountProfileResult, type StoredPilotAccountProfile } from "./pilotAccountProfile.js";
 
@@ -87,6 +88,9 @@ export type PilotInstallationObjectStub = {
   putWabaRoute(tenantId: string): Promise<boolean>;
   getWabaRoute(): Promise<string | null>;
   deleteWabaRoute(expectedTenantId?: string): Promise<void>;
+  recordAccountUpdate(update: Omit<MetaAccountUpdate, "wabaId">, now: string): Promise<void>;
+  getAccountUpdates(now: string): Promise<StoredAccountUpdate[]>;
+  clearAccountUpdates(expectedTenantId: string): Promise<void>;
   reservePilotSeat(
     tenantId: string,
     role: "internal" | "client",
@@ -299,6 +303,54 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     } else this.ctx.storage.sql.exec("DELETE FROM waba_route");
   }
 
+  async recordAccountUpdate(update: Omit<MetaAccountUpdate, "wabaId">, now: string): Promise<void> {
+    assertCanonicalIso(update.occurredAt);
+    assertCanonicalIso(now);
+    if (!isKnownAccountUpdateEvent(update.event)) throw new Error("Invalid account update event");
+    this.ctx.storage.sql.exec(
+      "INSERT OR IGNORE INTO account_updates (event, occurred_at, received_at) VALUES (?, ?, ?)",
+      update.event, update.occurredAt, now
+    );
+    this.pruneAccountUpdates(now);
+    await this.scheduleAccountUpdateCleanup();
+  }
+
+  async getAccountUpdates(now: string): Promise<StoredAccountUpdate[]> {
+    assertCanonicalIso(now);
+    this.pruneAccountUpdates(now);
+    await this.scheduleAccountUpdateCleanup();
+    return this.ctx.storage.sql.exec<{ event: string; occurred_at: string; received_at: string }>(
+      "SELECT event, occurred_at, received_at FROM account_updates ORDER BY occurred_at DESC, event LIMIT 50"
+    ).toArray().map(row => ({ event: row.event, occurredAt: row.occurred_at, receivedAt: row.received_at }));
+  }
+
+  private pruneAccountUpdates(now: string): void {
+    const oldest = new Date(Date.parse(now) - 90 * 24 * 60 * 60 * 1000).toISOString();
+    this.ctx.storage.sql.exec("DELETE FROM account_updates WHERE received_at <= ?", oldest);
+    this.ctx.storage.sql.exec(`DELETE FROM account_updates WHERE rowid NOT IN
+      (SELECT rowid FROM account_updates ORDER BY occurred_at DESC, event LIMIT 50)`);
+  }
+
+  private async scheduleAccountUpdateCleanup(): Promise<void> {
+    const first = this.ctx.storage.sql.exec<{ received_at: string }>(
+      "SELECT received_at FROM account_updates ORDER BY received_at LIMIT 1").toArray()[0];
+    if (first) await this.ctx.storage.setAlarm(Date.parse(first.received_at) + 90 * 86400000);
+    else await this.ctx.storage.deleteAlarm();
+  }
+
+  async alarm(): Promise<void> {
+    this.pruneAccountUpdates(new Date().toISOString());
+    await this.scheduleAccountUpdateCleanup();
+  }
+
+  async clearAccountUpdates(expectedTenantId: string): Promise<void> {
+    validateTenantId(expectedTenantId);
+    const owner = this.ctx.storage.sql.exec<RouteRow>("SELECT tenant_id FROM waba_route LIMIT 1").toArray()[0]?.tenant_id;
+    if (owner && owner !== expectedTenantId) return;
+    this.ctx.storage.sql.exec("DELETE FROM account_updates");
+    await this.ctx.storage.deleteAlarm();
+  }
+
   async reservePilotSeat(
     tenantId: string,
     role: "internal" | "client",
@@ -418,6 +470,12 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
         status TEXT NOT NULL CHECK(status IN ('connected', 'disconnected'))
       );
       CREATE TABLE IF NOT EXISTS waba_route (tenant_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS account_updates (
+        event TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        PRIMARY KEY (event, occurred_at)
+      );
       CREATE TABLE IF NOT EXISTS account_profile (snapshot TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS account_profile_commands (
         intent_key TEXT PRIMARY KEY, request TEXT NOT NULL, revision INTEGER NOT NULL
@@ -596,6 +654,17 @@ export function createPilotInstallationRegistry(
       return released;
     },
 
+    async recordAccountUpdate(update: MetaAccountUpdate, now = new Date()): Promise<void> {
+      validateProviderId(update.wabaId);
+      await namespace.getByName(`waba:${update.wabaId}`).recordAccountUpdate(
+        { event: update.event, occurredAt: update.occurredAt }, now.toISOString());
+    },
+
+    async getAccountUpdates(wabaId: string, now = new Date()): Promise<StoredAccountUpdate[]> {
+      validateProviderId(wabaId);
+      return namespace.getByName(`waba:${wabaId}`).getAccountUpdates(now.toISOString());
+    },
+
     async getWabaBindingOwner(wabaId: string): Promise<string | null> {
       validateProviderId(wabaId);
       return namespace.getByName(`waba:${wabaId}`).getWabaRoute();
@@ -622,6 +691,7 @@ export function createPilotInstallationRegistry(
       const installation = await this.getInstallation(tenantId);
       if (!installation) return null;
       await namespace.getByName(`tenant:${tenantId}`).deleteInstallation();
+      await namespace.getByName(`waba:${installation.wabaId}`).clearAccountUpdates(tenantId);
       await namespace.getByName(`waba:${installation.wabaId}`).deleteWabaRoute(tenantId);
       return installation;
     },

@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   handleMetaWhatsAppWebhook,
   metaWebhookWabaIds,
@@ -19,6 +19,27 @@ function sign(body: string) {
 }
 
 describe("Meta WhatsApp webhook", () => {
+  it("does not let partner portfolio IDs interfere with message routing", () => {
+    expect(metaWebhookWabaIds({ entry: [
+      { id: "111111111111", changes: [{ field: "account_update" }] },
+      { id: "222222222222", changes: [{ field: "messages" }] }
+    ] }, "messages")).toEqual(["222222222222"]);
+  });
+
+  it("invokes lifecycle persistence only after signature validation and returns503 if that persistence fails", async () => {
+    const body = JSON.stringify({ object: "whatsapp_business_account", entry: [] });
+    const sink = vi.fn(async () => { throw new Error("private storage error"); });
+    const unsigned = new Request(new URL(META_WHATSAPP_WEBHOOK_PATH, origin), { method: "POST", body });
+    expect((await handleMetaWhatsAppWebhook(unsigned, env, undefined, sink))?.status).toBe(401);
+    expect(sink).not.toHaveBeenCalled();
+    const signed = new Request(new URL(META_WHATSAPP_WEBHOOK_PATH, origin), {
+      method: "POST", body, headers: { "x-hub-signature-256": sign(body) }
+    });
+    const response = await handleMetaWhatsAppWebhook(signed, env, undefined, sink);
+    expect(response?.status).toBe(503);
+    expect(await response?.text()).not.toContain("private storage error");
+    expect(sink).toHaveBeenCalledOnce();
+  });
   it("returns the verification challenge only for the configured token", async () => {
     const url = new URL(META_WHATSAPP_WEBHOOK_PATH, origin);
     url.searchParams.set("hub.mode", "subscribe");

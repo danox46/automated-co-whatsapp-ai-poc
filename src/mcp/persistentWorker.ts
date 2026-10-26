@@ -1,3 +1,4 @@
+import { persistMetaAccountUpdates } from "../meta/accountUpdates.js";
 import {
   createDurableConversationReader,
   createDurableAttachmentContentReader,
@@ -302,7 +303,9 @@ export function createPersistentWhatsAppWorker(
       }
 
       const webhookResponse = await handleMetaWhatsAppWebhook(request, env, async (payload) => {
-        const wabaIds = metaWebhookWabaIds(payload);
+        // account_update can use a partner portfolio as entry.id. Only message
+        // entries participate in conversation routing, even in mixed batches.
+        const wabaIds = metaWebhookWabaIds(payload, "messages");
         if (wabaIds.length !== 1) return null;
         const tenantId = await registry.resolveTenantForWaba(wabaIds[0]);
         return tenantId ? {
@@ -311,7 +314,7 @@ export function createPersistentWhatsAppWorker(
           writer,
           ...(attachmentCapture ? { captureAttachment: attachmentCapture } : {})
         } : null;
-      });
+      }, payload => persistMetaAccountUpdates(payload, env.META_APP_ID ?? "", update => registry.recordAccountUpdate(update)));
       if (webhookResponse) return webhookResponse;
 
       if (new URL(request.url).pathname === "/health") {
