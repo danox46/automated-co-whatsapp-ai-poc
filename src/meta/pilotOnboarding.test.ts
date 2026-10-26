@@ -230,9 +230,9 @@ async function signupBrowserFixture(callbackFetch: typeof fetch, reauthorization
   return {
     button, status, click, loginOptions,
     login: () => completeLogin({ authResponse: { code: "A2345678901234567890" } }),
-    finish: (event = reauthorization || existingAccount ? "FINISH_GRANT_ONLY_API_ACCESS" : "FINISH") => receive({ origin: "https://www.facebook.com", data: {
+    finish: (event = reauthorization || existingAccount ? "FINISH_GRANT_ONLY_API_ACCESS" : "FINISH", assets: Record<string, unknown> = {}) => receive({ origin: "https://www.facebook.com", data: {
       type: "WA_EMBEDDED_SIGNUP", event,
-      data: { waba_id: "100200300", phone_number_id: "400500600" }
+      data: { waba_id: "100200300", phone_number_id: "400500600", ...assets }
     } }),
     cancel: () => receive({ origin: "https://www.facebook.com", data: {
       type: "WA_EMBEDDED_SIGNUP", event: "CANCEL"
@@ -341,18 +341,43 @@ describe("existing-phone integration onboarding", () => {
     expect(success.fixture.installations.get("existing-morning")).toEqual(success.installation);
   });
 
-  it("accepts only the app-only completion event for the new integration too", async () => {
+  it.each(["FINISH_GRANT_ONLY_API_ACCESS", "FINISH"])("accepts documented phone-bound completion %s for an existing-phone integration", async (event) => {
     const send = vi.fn(async () => Response.json({ ok: true }));
     const browser = await signupBrowserFixture(send, false, true);
-    browser.click(); browser.login(); browser.finish("FINISH");
+    browser.click(); browser.login();
     expect(send).not.toHaveBeenCalled();
     expect(browser.loginOptions).toHaveBeenCalledWith(expect.objectContaining({ extras: {
       version: "v3", features: [{ name: "app_only_install" }], sessionInfoVersion: "3"
     } }));
-    browser.finish();
+    browser.finish(event);
     await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(browser.status.textContent).toContain("connected for the supervised pilot"));
     expect(browser.status.textContent).not.toContain("renewed");
+  });
+
+  it("shows which half of Meta's result is still missing without resubmitting or rendering its code", async () => {
+    const send = vi.fn(async () => Response.json({ ok: true }));
+    const codeFirst = await signupBrowserFixture(send, false, true);
+    codeFirst.click(); codeFirst.login();
+    expect(codeFirst.status.textContent).toContain("Waiting for the selected account and phone");
+    expect(codeFirst.status.textContent).not.toContain("A2345678901234567890");
+    const assetsFirst = await signupBrowserFixture(send, false, true);
+    assetsFirst.click(); assetsFirst.finish();
+    expect(assetsFirst.status.textContent).toContain("Waiting for Meta authorization");
+    expect(send).not.toHaveBeenCalled();
+    assetsFirst.login();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+  });
+
+  it("explains a phone-less or malformed completion and does not contact the callback", async () => {
+    const send = vi.fn(async () => Response.json({ ok: true }));
+    const browser = await signupBrowserFixture(send, false, true);
+    browser.click(); browser.login(); browser.finish("FINISH_ONLY_WABA");
+    expect(browser.status.textContent).toContain("without a phone number");
+    browser.finish("FINISH", { phone_number_id: undefined });
+    expect(browser.status.textContent).toContain("without the required account and phone details");
+    expect(send).not.toHaveBeenCalled();
+    expect(browser.button.disabled).toBe(true);
   });
 
   it("keeps issuance admin-only and validates the optional server-side binding", async () => {

@@ -21,7 +21,11 @@ updates that installation. See `META_REAUTHORIZATION.md`.
 
 A separate integration on an existing Cloud API phone uses a normal fresh-tenant
 invitation with `onboarding: { flow: "existing_account" }`. It uses the documented
-app-only SDK flow and accepts only `FINISH_GRANT_ONLY_API_ACCESS`. The selected
+app-only SDK flow. Its client accepts the documented phone-bound completion types
+`FINISH_GRANT_ONLY_API_ACCESS` and `FINISH`; the latter is a compatibility path
+for the updated account model, not a claim that a specific live callback used it.
+Neither event grants access by itself: the backend requires the invitation/state,
+exact optional asset pins, actual exchanged token and verified phone membership. The selected
 Messaging Account is bound to the new tenant after real provider verification;
 the original installation, routes, grants and history are retained. This is not
 WhatsApp Business app coexistence onboarding and does not register a new number.
@@ -54,3 +58,8 @@ history/session isolation. These are synthetic supporting evidence. Completion
 requires a real Meta callback, actual asset/subscription readback and scoped MCP
 access on the new installation. Genuine account-update receipt is checked
 separately. App Review submission and publishing remain separately held.
+
+The page distinguishes authorization-returned from account-details-returned states.
+Phone-less, malformed and mismatched-flow completions show explicit explanations,
+without logging payloads, codes or tokens. There is no automatic code replay or
+resubmission. A provider Done screen alone is not MCP connection proof.
