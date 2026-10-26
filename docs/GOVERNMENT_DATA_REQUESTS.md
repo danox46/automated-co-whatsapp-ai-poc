@@ -1,13 +1,23 @@
 # Government data requests · Morning Meta integrations
 
-Version 1.0 · prepared 2026-10-25 UTC (2026-10-24 Bogotá).
+Version 1.1 · adopted 2026-10-25 (America/Bogota).
 Owner: Daniel Rosales, MORNING ARP S.A.S.
 
 This is the prospective operating procedure prepared at Daniel's request. It
 does not certify historical conduct, replace advice on a particular legal
 request, or authorize an agent to disclose data. Do not backdate it or describe
-it as a long-standing practice. Daniel owns adoption and oversight; until he
-reviews it, treat it as a prepared procedure, not a completed Meta attestation.
+it as a long-standing practice. Daniel expressly adopted this procedure on
+2026-10-25 and confirmed that Morning made no disclosures of Meta-derived
+personal data in response to national-security requests in the preceding
+12 months. That owner confirmation is recorded in Morning's operational
+procedure record; it is not a claim that a historical request register or
+automated legal-hold system existed. Daniel owns oversight and intake.
+
+The restricted manual case directory and header-only register have been
+initialized on the operator host. Keep request documents, case references and
+any personal data there, outside Git and dashboards. No case or historical
+disclosure was created to populate the register. Adoption does not authorize
+an agent to disclose data or submit the overall App Review.
 
 ## What is covered
 
