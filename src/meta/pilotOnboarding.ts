@@ -10,6 +10,7 @@ import {
   sha256Base64Url
 } from "./pilotCrypto.js";
 import { SUPPORTED_WHATSAPP_MCP_SCOPES } from "../mcp/auth.js";
+import { WHATSAPP_POLICY_URLS } from "../mcp/whatsappPolicy.js";
 import type { WhatsAppSandboxConfig } from "./sandboxConfig.js";
 
 const INVITE_COOKIE = "__Host-wa_pilot_invite";
@@ -109,7 +110,7 @@ export function createPilotOnboardingHandler(
     const queryToken = url.searchParams.get("invite");
     if (queryToken) {
       const invite = await dependencies.registry.getInvite(queryToken, now());
-      if (!invite) return htmlError("This pilot invitation is invalid, expired, or already used.", 410);
+      if (!invite) return renderInvitationEntry("This invitation is invalid, expired, or already used. Enter a new invitation code to continue.", 410);
       return new Response(null, {
         status: 303,
         headers: securityHeaders({
@@ -120,9 +121,9 @@ export function createPilotOnboardingHandler(
     }
 
     const inviteToken = readCookie(request, INVITE_COOKIE);
-    if (!inviteToken) return htmlError("Open the complete pilot invitation link to continue.", 401);
+    if (!inviteToken) return renderInvitationEntry();
     const invite = await dependencies.registry.getInvite(inviteToken, now());
-    if (!invite) return htmlError("This pilot invitation is invalid, expired, or already used.", 410);
+    if (!invite) return renderInvitationEntry("This invitation is invalid, expired, or already used. Enter a new invitation code to continue.", 410, true);
 
     const state = randomBase64Url(32);
     const sessionExpiresAt = new Date(Math.min(
@@ -163,6 +164,10 @@ export function createPilotOnboardingHandler(
       const token = await dependencies.graph.exchangeEmbeddedSignupCode(code);
       accessToken = token.accessToken;
       const phone = await dependencies.graph.verifyPhoneBelongsToWaba(accessToken, wabaId, phoneNumberId);
+      const existingOwner = await dependencies.registry.getWabaBindingOwner(wabaId);
+      if (existingOwner && existingOwner !== invite.tenantId) {
+        return jsonError("PILOT_WABA_ALREADY_CONNECTED", "This WhatsApp business account is already connected. Use its existing MCP connection, or reopen this invitation and select a different account.", 409);
+      }
       await dependencies.graph.subscribeApp(accessToken, wabaId);
       subscribed = true;
       const connectedAt = now().toISOString();
@@ -195,7 +200,14 @@ export function createPilotOnboardingHandler(
     } catch (error) {
       if (subscribed && accessToken) {
         try {
-          await dependencies.graph.unsubscribeApp(accessToken, wabaId);
+          // A successful install or a competing invitation may already own the
+          // shared app subscription. Never tear down that connection on an
+          // unrelated callback/session failure. Unknown ownership stays intact.
+          const owner = await dependencies.registry.getWabaBindingOwner(wabaId);
+          if (owner && owner !== invite.tenantId) {
+            return jsonError("PILOT_WABA_ALREADY_CONNECTED", "This WhatsApp business account was connected by another setup. Use its existing MCP connection, or reopen this invitation and select a different account.", 409);
+          }
+          if (!owner) await dependencies.graph.unsubscribeApp(accessToken, wabaId);
         } catch {
           // The response remains fail-closed. An owner can reconcile the Meta subscription manually.
         }
@@ -303,11 +315,15 @@ export function createPilotOnboardingHandler(
     const cohortRole = body?.cohortRole === "internal" || body?.cohortRole === "client"
       ? body.cohortRole
       : null;
-    const expiresInHours = typeof body?.expiresInHours === "number" ? body.expiresInHours : 24;
+    const reviewInvitation = body?.purpose === "meta_app_review";
+    const validPurpose = body?.purpose === undefined || body.purpose === "pilot" || reviewInvitation;
+    const maxHours = reviewInvitation ? 24 * 400 : 72;
+    const expiresInHours = typeof body?.expiresInHours === "number" ? body.expiresInHours : reviewInvitation ? maxHours : 24;
     if (!tenantId || !/^[a-z0-9][a-z0-9_-]{2,63}$/u.test(tenantId) ||
         !label || label.length > 120 || !cohortRole || !Number.isInteger(expiresInHours) ||
-        expiresInHours < 1 || expiresInHours > 72) {
-      return jsonError("PILOT_INVITATION_INVALID", "Expected a safe tenant ID, label, and expiry from 1 to 72 hours.", 400);
+        expiresInHours < 1 || expiresInHours > maxHours || !validPurpose ||
+        (reviewInvitation && (cohortRole !== "client" || !tenantId.startsWith("meta-review-")))) {
+      return jsonError("PILOT_INVITATION_INVALID", "Expected a safe tenant ID, label and bounded expiry. Longer review invitations require the meta_app_review purpose and a fresh meta-review- client tenant.", 400);
     }
     if (await dependencies.registry.getInstallation(tenantId)) {
       return jsonError("PILOT_TENANT_ALREADY_CONNECTED", "This pilot tenant already has an installation.", 409);
@@ -327,6 +343,7 @@ export function createPilotOnboardingHandler(
       ok: true,
       tenantId,
       cohortRole,
+      purpose: reviewInvitation ? "meta_app_review" : "pilot",
       expiresAt,
       rotated: rotate,
       invitationUrl: `${publicOrigin}/pilot/whatsapp/connect?invite=${encodeURIComponent(token)}`,
@@ -593,6 +610,24 @@ export function createPilotOnboardingHandler(
   }
 }
 
+function renderInvitationEntry(message = "", status = 200, clearCookie = false): Response {
+  const nonce = randomBase64Url(18);
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect WhatsApp · Morning ARP</title><style nonce="${nonce}">
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0c1015;color:#f5f7fa;font:16px/1.5 system-ui,sans-serif}.shell{max-width:640px;margin:7vh auto;padding:24px}.card{background:#151b23;border:1px solid #2a3442;border-radius:18px;padding:32px}.eyebrow{color:#64d7ba;font-size:.78rem;font-weight:750;letter-spacing:.1em;text-transform:uppercase}h1{font-size:2rem;line-height:1.2;margin:.6rem 0 1rem}p{color:#a9b4c2}label{display:block;font-weight:650;margin:24px 0 8px}input{width:100%;padding:14px;border:1px solid #52637a;border-radius:10px;background:#0c1015;color:#f5f7fa;font:inherit}input:focus{outline:2px solid #64d7ba;outline-offset:2px}button{margin-top:16px;background:#64d7ba;color:#07120f;border:0;border-radius:10px;padding:14px 20px;font:inherit;font-weight:750;cursor:pointer}a{color:#8ee5d0}.fine{font-size:.86rem}.notice{padding:12px;border:1px solid #d9ac60;border-radius:10px;color:#f0ce96}footer{display:flex;flex-wrap:wrap;gap:16px;margin-top:24px;font-size:.85rem}@media(max-width:480px){.shell{padding:16px}.card{padding:24px}h1{font-size:1.7rem}}</style></head>
+<body><main class="shell"><section class="card"><div class="eyebrow">Morning ARP Connect</div><h1>Connect your WhatsApp business</h1>
+<p>Use your Morning invitation to connect an authorized business and its WhatsApp conversations to your MCP client.</p>
+${message ? `<p class="notice" role="alert">${escapeHtml(message)}</p>` : ""}
+<form method="get" action="/pilot/whatsapp/connect"><label for="invite">Invitation code</label><input id="invite" name="invite" type="text" required pattern="[A-Za-z0-9_-]{32,128}" maxlength="128" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="invite-help"><p id="invite-help" class="fine">Open the complete invitation link, or paste its code here. Your invitation is checked before Meta sign-in begins.</p><button type="submit">Continue</button></form>
+<p class="fine">Already connected? Start Connect from your MCP client and use Morning sign-in for your assigned business.</p>
+<footer><a href="${escapeHtml(WHATSAPP_POLICY_URLS.privacy)}">Privacy</a><a href="${escapeHtml(WHATSAPP_POLICY_URLS.terms)}">Terms</a><a href="${escapeHtml(WHATSAPP_POLICY_URLS.support)}">Get an invitation</a></footer></section></main></body></html>`;
+  const headers = securityHeaders({ "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy": `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'` });
+  if (clearCookie) headers.append("Set-Cookie", clearInviteCookie());
+  return new Response(html, { status, headers });
+}
+
 function renderSignupPage(input: {
   label: string;
   state: string;
@@ -611,15 +646,15 @@ function renderSignupPage(input: {
   }).replace(/</g, "\\u003c");
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect WhatsApp · Automated &amp; CO</title>
+<title>Connect WhatsApp · Morning ARP</title>
 <style nonce="${nonce}">:root{color-scheme:dark}body{margin:0;background:#0c1015;color:#f5f7fa;font:16px/1.5 system-ui,sans-serif}.shell{max-width:720px;margin:8vh auto;padding:32px}.card{background:#151b23;border:1px solid #2a3442;border-radius:18px;padding:32px}h1{font-size:2rem;margin:.2rem 0 1rem}.eyebrow{color:#64d7ba;text-transform:uppercase;letter-spacing:.12em;font-weight:700;font-size:.78rem}.muted{color:#a9b4c2}button{background:#64d7ba;color:#07120f;border:0;border-radius:10px;padding:14px 20px;font-weight:800;font-size:1rem;cursor:pointer}button:disabled{opacity:.55;cursor:wait}.status{min-height:1.5em;margin-top:16px}.fine{font-size:.86rem;color:#8693a3;margin-top:24px}</style></head>
 <body><main class="shell"><section class="card"><div class="eyebrow">Invited WhatsApp pilot</div><h1>Connect ${escapeHtml(input.label)}</h1>
-<p>Sign in to Meta and choose only the business-owned WhatsApp account and phone number approved for this pilot. Automated &amp; CO never asks for your Meta password, MFA code, or permanent access token.</p>
+<p>Sign in to Meta and choose only the business-owned WhatsApp account and phone number approved for this pilot. Morning never asks for your Meta password, MFA code, or permanent access token.</p>
 <ul class="muted"><li>Your WhatsApp assets remain owned by your business.</li><li>The MCP receives tenant-isolated access to connection status, policy guidance, structured conversation history, replies inside the verified 24-hour window, and approved templates.</li><li>Every send is still checked against the connected account, recipient consent, service window, template approval, and idempotency state.</li><li>You can disconnect and request deletion through the pilot support process.</li></ul>
 <button id="connect" type="button" disabled>Loading Meta authorization…</button><p id="status" class="status" role="status" aria-live="polite"></p>
 <p class="fine">This one-time invitation is limited to the closed development pilot. It does not authorize campaigns, bulk messaging, or unrelated use.</p></section></main>
 <div id="fb-root"></div><script nonce="${nonce}">const cfg=${config};let assets=null;let authCode=null;let completionStarted=false;const button=document.getElementById('connect');const status=document.getElementById('status');
-function setStatus(message){status.textContent=message}function finish(){if(completionStarted||!assets||!authCode)return;completionStarted=true;button.disabled=true;setStatus('Securing your WhatsApp connection…');fetch('/pilot/whatsapp/callback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({state:cfg.state,code:authCode,wabaId:assets.wabaId,phoneNumberId:assets.phoneNumberId})}).then(async response=>{const body=await response.json();if(!response.ok)throw new Error(body?.error?.message||'Connection failed.');setStatus('WhatsApp is connected for the supervised pilot. You may close this page.');button.hidden=true}).catch(()=>{setStatus('We could not confirm the connection. Do not retry this one-time authorization. Contact support so we can check its status and help you continue.');button.disabled=true})}
+function setStatus(message){status.textContent=message}function finish(){if(completionStarted||!assets||!authCode)return;completionStarted=true;button.disabled=true;setStatus('Securing your WhatsApp connection…');fetch('/pilot/whatsapp/callback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({state:cfg.state,code:authCode,wabaId:assets.wabaId,phoneNumberId:assets.phoneNumberId})}).then(async response=>{const body=await response.json();if(!response.ok){if(body?.error?.code==='PILOT_WABA_ALREADY_CONNECTED'){setStatus(body.error.message);return}throw new Error(body?.error?.message||'Connection failed.')}setStatus('WhatsApp is connected for the supervised pilot. You may close this page.');button.hidden=true}).catch(()=>{setStatus('We could not confirm the connection. Do not retry this one-time authorization. Contact support so we can check its status and help you continue.');button.disabled=true})}
 window.addEventListener('message',event=>{if(completionStarted||event.origin!=='https://www.facebook.com'&&event.origin!=='https://web.facebook.com')return;let data=event.data;try{if(typeof data==='string')data=JSON.parse(data)}catch{return}if(data?.type!=='WA_EMBEDDED_SIGNUP')return;if(data.event==='FINISH'){const wabaId=data.data?.waba_id;const phoneNumberId=data.data?.phone_number_id;if(/^\\d{3,32}$/.test(wabaId)&&/^\\d{3,32}$/.test(phoneNumberId)){assets={wabaId,phoneNumberId};finish()}}else if(data.event==='CANCEL'){setStatus('Meta signup was cancelled. Nothing was connected.');button.disabled=false}else if(data.event==='ERROR'){setStatus('Meta could not complete signup. Nothing was connected.');button.disabled=false}});
 window.fbAsyncInit=()=>{FB.init({appId:cfg.appId,cookie:false,xfbml:false,version:cfg.graphVersion});button.disabled=false;button.textContent='Continue with Meta';button.addEventListener('click',()=>{if(completionStarted)return;assets=null;authCode=null;button.disabled=true;setStatus('Waiting for Meta authorization…');FB.login(response=>{if(completionStarted)return;authCode=response?.authResponse?.code||null;if(!authCode){setStatus('Meta authorization was not completed. Nothing was connected.');button.disabled=false;return}finish()},{config_id:cfg.configId,response_type:'code',override_default_response_type:true,extras:{sessionInfoVersion:cfg.sessionVersion}})},{once:false})};
 const sdk=document.createElement('script');sdk.src='https://connect.facebook.net/en_US/sdk.js';sdk.async=true;sdk.defer=true;sdk.crossOrigin='anonymous';sdk.nonce='${nonce}';document.body.appendChild(sdk);</script></body></html>`;
@@ -640,7 +675,7 @@ function renderSandboxConnectedPage(
   const nonce = randomBase64Url(18);
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WhatsApp sandbox connected · Automated &amp; CO</title>
+<title>WhatsApp sandbox connected · Morning ARP</title>
 <style nonce="${nonce}">:root{color-scheme:dark}body{margin:0;background:#0c1015;color:#f5f7fa;font:16px/1.5 system-ui,sans-serif}.shell{max-width:720px;margin:8vh auto;padding:32px}.card{background:#151b23;border:1px solid #2a3442;border-radius:18px;padding:32px}h1{font-size:2rem;margin:.2rem 0 1rem}.eyebrow{color:#64d7ba;text-transform:uppercase;letter-spacing:.12em;font-weight:700;font-size:.78rem}.muted{color:#a9b4c2}code{display:block;padding:14px;border-radius:10px;background:#0c1015;color:#b9f5e4;overflow-wrap:anywhere}.fine{font-size:.86rem;color:#8693a3;margin-top:24px}</style></head>
 <body><main class="shell"><section class="card"><div class="eyebrow">App-owned test environment</div><h1>${escapeHtml(label)} is connected</h1>
 <p>The Meta test number is bound to an internal sandbox tenant. Provider sends are restricted again at dispatch time to the server-side recipient allowlist.</p>

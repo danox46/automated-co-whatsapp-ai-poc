@@ -62,6 +62,9 @@ function createFixture() {
       orphanedConnectedSeats = 0;
       return released;
     },
+    async getWabaBindingOwner(wabaId) {
+      return [...installations.values()].find((item) => item.wabaId === wabaId)?.tenantId ?? null;
+    },
     async resolveTenantForWaba(wabaId) {
       return [...installations.values()].find((item) => item.wabaId === wabaId)?.tenantId ?? null;
     },
@@ -216,7 +219,111 @@ async function signupBrowserFixture(callbackFetch: typeof fetch) {
   };
 }
 
+async function submitFixtureSignup(fixture: ReturnType<typeof createFixture>, tenantId: string) {
+  const invite = await (await fixture.handler.fetch(adminRequest('/admin/pilot/invitations', 'POST',
+    { tenantId, label: 'Review fixture', cohortRole: 'client' })))!.json() as { invitationUrl: string };
+  const redirect = await fixture.handler.fetch(new Request(invite.invitationUrl));
+  const cookie = redirect!.headers.get('set-cookie')!.split(';')[0];
+  const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`, { headers: { cookie } }));
+  const state = JSON.parse(/const cfg=(\{.*?\});let/u.exec(await page!.text())![1]).state;
+  return fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/callback`, { method: 'POST',
+    headers: { cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state, code: 'A2345678901234567890', wabaId: '100200300', phoneNumberId: '400500600' }) }));
+}
+
 describe("closed-pilot onboarding", () => {
+  it("offers an invitation-entry page without creating a session or exposing provider configuration", async () => {
+    const fixture = createFixture();
+    const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`));
+    expect(page?.status).toBe(200);
+    const html = await page!.text();
+    expect(html).toContain('name="invite"');
+    expect(html).toContain('action="/pilot/whatsapp/connect"');
+    expect(html).toContain('Morning ARP Connect');
+    expect(html).not.toMatch(/private-app-secret|owner-admin-token|public-config-id|connect.facebook.net/);
+    expect(page?.headers.get('set-cookie')).toBeNull();
+    expect(page?.headers.get('content-security-policy')).toContain("form-action 'self'");
+    expect(fixture.createAuthorizationSession).not.toHaveBeenCalled();
+    expect(fixture.graph.subscribeApp).not.toHaveBeenCalled();
+  });
+
+  it('recovers an expired invitation cookie without reflecting its secret or enabling access', async () => {
+    const fixture = createFixture();
+    const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`, {
+      headers: { cookie: '__Host-wa_pilot_invite=expired_private_code_123456789' }
+    }));
+    expect(page?.status).toBe(410);
+    expect(page?.headers.get('set-cookie')).toContain('__Host-wa_pilot_invite=;');
+    const html = await page!.text();
+    expect(html).toContain('Enter a new invitation code');
+    expect(html).not.toContain('expired_private_code_123456789');
+    expect(fixture.createAuthorizationSession).not.toHaveBeenCalled();
+  });
+
+  it('shows a definitive already-connected rejection without retrying the consumed Meta code', async () => {
+    const callback = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: false,
+      error: { code: 'PILOT_WABA_ALREADY_CONNECTED', message: 'This account is already connected. Use its existing connection.' }
+    }, { status: 409 }));
+    const browser = await signupBrowserFixture(callback);
+    browser.click(); browser.login(); browser.finish();
+    await vi.waitFor(() => expect(browser.status.textContent).toContain('already connected'));
+    expect(browser.status.textContent).not.toContain('could not confirm');
+    expect(browser.button.disabled).toBe(true);
+    browser.finish(); browser.login();
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a completed business subscription when subsequent MCP session creation fails', async () => {
+    const fixture = createFixture();
+    fixture.createAuthorizationSession.mockRejectedValue(new Error('Session store temporarily unavailable'));
+    const response = await submitFixtureSignup(fixture, 'meta-review-session');
+    expect(response?.status).toBe(502);
+    expect(fixture.graph.subscribeApp).toHaveBeenCalledTimes(1);
+    expect(fixture.installations.get('meta-review-session')?.status).toBe('connected');
+    expect(fixture.graph.unsubscribeApp).not.toHaveBeenCalled();
+  });
+
+  it("keeps a bounded review invitation separate from ordinary pilot and sandbox expiry", async () => {
+    const fixture = createFixture();
+    const body = { tenantId: 'meta-review-first', label: 'Meta App Review', cohortRole: 'client', purpose: 'meta_app_review', expiresInHours: 24 * 400 };
+    expect((await fixture.handler.fetch(adminRequest('/admin/pilot/invitations', 'POST', body, 'wrong')))?.status).toBe(401);
+    const review = await fixture.handler.fetch(adminRequest('/admin/pilot/invitations', 'POST', body));
+    expect(review?.status).toBe(201);
+    const data = await review!.json() as { invitationUrl: string; purpose: string; expiresAt: string };
+    expect(data.purpose).toBe('meta_app_review');
+    expect(Date.parse(data.expiresAt) - Date.parse('2026-09-07T12:00:00.000Z')).toBe(400 * 24 * 60 * 60 * 1000);
+    expect((await fixture.handler.fetch(new Request(data.invitationUrl)))?.status).toBe(303);
+    expect(fixture.createAuthorizationSession).not.toHaveBeenCalled();
+    for (const invalid of [{ ...body, purpose: 'pilot' }, { ...body, purpose: 'other' },
+      { ...body, tenantId: 'morning-real' }, { ...body, cohortRole: 'internal' }, { ...body, expiresInHours: 24 * 400 + 1 }]) {
+      expect((await fixture.handler.fetch(adminRequest('/admin/pilot/invitations', 'POST', invalid)))?.status).toBe(400);
+    }
+    expect((await fixture.handler.fetch(adminRequest('/admin/pilot/sandbox/invitations', 'POST', { label: 'Sandbox', purpose: 'meta_app_review', expiresInHours: 25 })))?.status).toBe(400);
+  });
+
+  it("does not subscribe or disconnect a business account already connected through another invitation", async () => {
+    const fixture = createFixture();
+    const existing: PilotInstallationRecord = { tenantId: 'existing-business', wabaId: '100200300', phoneNumberId: '400500600',
+      encryptedAccessToken: await encryptPilotSecret('existing-provider-token', fixture.encryptionKey), connectedAt: '2026-09-07T12:00:00.000Z',
+      webhookSubscribedAt: '2026-09-07T12:00:00.000Z', status: 'connected' };
+    fixture.installations.set(existing.tenantId, existing);
+    const invite = await (await fixture.handler.fetch(adminRequest('/admin/pilot/invitations', 'POST',
+      { tenantId: 'meta-review-new', label: 'Review', cohortRole: 'client' })))!.json() as { invitationUrl: string };
+    const redirect = await fixture.handler.fetch(new Request(invite.invitationUrl));
+    const cookie = redirect!.headers.get('set-cookie')!.split(';')[0];
+    const page = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/connect`, { headers: { cookie } }));
+    const state = JSON.parse(/const cfg=(\{.*?\});let/u.exec(await page!.text())![1]).state;
+    const callback = await fixture.handler.fetch(new Request(`${origin}/pilot/whatsapp/callback`, { method: 'POST',
+      headers: { cookie, Origin: origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state, code: 'A2345678901234567890', wabaId: existing.wabaId, phoneNumberId: existing.phoneNumberId }) }));
+    expect(callback?.status).toBe(409);
+    expect(await callback!.text()).toContain('PILOT_WABA_ALREADY_CONNECTED');
+    expect(fixture.graph.subscribeApp).not.toHaveBeenCalled();
+    expect(fixture.graph.unsubscribeApp).not.toHaveBeenCalled();
+    expect(fixture.createAuthorizationSession).not.toHaveBeenCalled();
+    expect(fixture.installations.get(existing.tenantId)).toEqual(existing);
+    expect(fixture.installations.has('meta-review-new')).toBe(false);
+  });
   it.each(["assets-first", "code-first"])("submits one callback when Meta repeats completion events (%s)", async (order) => {
     let resolveCallback!: (response: Response) => void;
     const callbackFetch = vi.fn<typeof fetch>(() => new Promise(resolve => { resolveCallback = resolve; }));

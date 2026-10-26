@@ -7,7 +7,7 @@ const [command, baseUrl, ...argumentsAfterOrigin] = process.argv.slice(2);
 const adminToken = process.env.PILOT_ADMIN_TOKEN;
 
 if (!adminToken || !command || !baseUrl) {
-  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|status|provider-status|account-profile|set-account-profile|conversations|history|dispatches|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
+  fail("Usage: PILOT_ADMIN_TOKEN=<secret> npm run pilot:admin -- <sandbox-invite|sandbox-reinvite|sandbox-connect|refresh-sandbox-credential|flow-draft|flow-publish|invite|reinvite|review-invite|review-reinvite|status|provider-status|account-profile|set-account-profile|conversations|history|dispatches|capture-attachment|disconnect|reconcile-disconnect|delete> <https-origin> [arguments]");
 }
 
 const origin = new URL(baseUrl).origin;
@@ -57,19 +57,24 @@ if (command === "sandbox-connect") {
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({ label, expiresInHours: 24 })
   });
-} else if (command === "invite" || command === "reinvite") {
+} else if (["invite", "reinvite", "review-invite", "review-reinvite"].includes(command)) {
+  const reviewInvitation = command.startsWith("review-");
   const [tenantId, ...rest] = argumentsAfterOrigin;
   if (!tenantId) fail(`${command} requires a tenant ID.`);
   const label = rest[0];
   const cohortRole = rest[1] ?? "client";
   if (!label) fail("The invite command requires a human-readable pilot label.");
-  const invitationPath = command === "reinvite"
+  if (reviewInvitation && (!tenantId.startsWith("meta-review-") || rest.length !== 1)) {
+    fail("Review invitations require a fresh meta-review- tenant ID and a label, with no role override.");
+  }
+  const invitationPath = command === "reinvite" || command === "review-reinvite"
     ? "/admin/pilot/invitations/rotate"
     : "/admin/pilot/invitations";
   response = await fetch(`${origin}${invitationPath}`, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
-    body: JSON.stringify({ tenantId, label, cohortRole, expiresInHours: 24 })
+    body: JSON.stringify({ tenantId, label, cohortRole, expiresInHours: reviewInvitation ? 24 * 400 : 24,
+      ...(reviewInvitation ? { purpose: "meta_app_review" } : {}) })
   });
 } else if (command === "account-profile" || command === "set-account-profile") {
   const [tenantId, path] = argumentsAfterOrigin;

@@ -84,9 +84,9 @@ export type PilotInstallationObjectStub = {
   getAccountProfile(): Promise<StoredPilotAccountProfile | null>;
   getAccountProfileView(): Promise<ReturnType<typeof describePilotAccountProfile> | null>;
   putAccountProfile(command: PilotAccountProfileCommand, now: string): Promise<PilotAccountProfileResult>;
-  putWabaRoute(tenantId: string): Promise<void>;
+  putWabaRoute(tenantId: string): Promise<boolean>;
   getWabaRoute(): Promise<string | null>;
-  deleteWabaRoute(): Promise<void>;
+  deleteWabaRoute(expectedTenantId?: string): Promise<void>;
   reservePilotSeat(
     tenantId: string,
     role: "internal" | "client",
@@ -277,18 +277,26 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     });
   }
 
-  async putWabaRoute(tenantId: string): Promise<void> {
+  async putWabaRoute(tenantId: string): Promise<boolean> {
     validateTenantId(tenantId);
+    // No await between read and write: the owning Durable Object claims this
+    // route atomically, including when two invitations finish concurrently.
+    const owner = this.ctx.storage.sql.exec<RouteRow>("SELECT tenant_id FROM waba_route LIMIT 1").toArray()[0]?.tenant_id;
+    if (owner && owner !== tenantId) return false;
     this.ctx.storage.sql.exec("DELETE FROM waba_route");
     this.ctx.storage.sql.exec("INSERT INTO waba_route (tenant_id) VALUES (?)", tenantId);
+    return true;
   }
 
   async getWabaRoute(): Promise<string | null> {
     return this.ctx.storage.sql.exec<RouteRow>("SELECT tenant_id FROM waba_route LIMIT 1").toArray()[0]?.tenant_id ?? null;
   }
 
-  async deleteWabaRoute(): Promise<void> {
-    this.ctx.storage.sql.exec("DELETE FROM waba_route");
+  async deleteWabaRoute(expectedTenantId?: string): Promise<void> {
+    if (expectedTenantId !== undefined) {
+      validateTenantId(expectedTenantId);
+      this.ctx.storage.sql.exec("DELETE FROM waba_route WHERE tenant_id = ?", expectedTenantId);
+    } else this.ctx.storage.sql.exec("DELETE FROM waba_route");
   }
 
   async reservePilotSeat(
@@ -442,11 +450,11 @@ export function createPilotInstallationRegistry(
     if (targetTenant && targetTenant !== installation.tenantId) {
       throw new Error("WABA is already bound to another tenant");
     }
+    if (!await wabaStub.putWabaRoute(installation.tenantId)) throw new Error("WABA is already bound to another tenant");
     await tenantStub.putInstallation(installation);
-    await wabaStub.putWabaRoute(installation.tenantId);
     if (previous && previous.wabaId !== installation.wabaId) {
       const oldRoute = namespace.getByName(`waba:${previous.wabaId}`);
-      if (await oldRoute.getWabaRoute() === installation.tenantId) await oldRoute.deleteWabaRoute();
+      await oldRoute.deleteWabaRoute(installation.tenantId);
     }
   }
 
@@ -588,6 +596,11 @@ export function createPilotInstallationRegistry(
       return released;
     },
 
+    async getWabaBindingOwner(wabaId: string): Promise<string | null> {
+      validateProviderId(wabaId);
+      return namespace.getByName(`waba:${wabaId}`).getWabaRoute();
+    },
+
     async resolveTenantForWaba(wabaId: string): Promise<string | null> {
       validateProviderId(wabaId);
       const tenantId = await namespace.getByName(`waba:${wabaId}`).getWabaRoute();
@@ -600,7 +613,7 @@ export function createPilotInstallationRegistry(
       const installation = await this.getInstallation(tenantId);
       if (!installation) return null;
       await namespace.getByName(`tenant:${tenantId}`).markInstallationDisconnected(disconnectedAt.toISOString());
-      await namespace.getByName(`waba:${installation.wabaId}`).deleteWabaRoute();
+      await namespace.getByName(`waba:${installation.wabaId}`).deleteWabaRoute(tenantId);
       await namespace.getByName(cohortObjectName).releasePilotSeat(tenantId);
       return installation;
     },
@@ -609,7 +622,7 @@ export function createPilotInstallationRegistry(
       const installation = await this.getInstallation(tenantId);
       if (!installation) return null;
       await namespace.getByName(`tenant:${tenantId}`).deleteInstallation();
-      await namespace.getByName(`waba:${installation.wabaId}`).deleteWabaRoute();
+      await namespace.getByName(`waba:${installation.wabaId}`).deleteWabaRoute(tenantId);
       return installation;
     },
 

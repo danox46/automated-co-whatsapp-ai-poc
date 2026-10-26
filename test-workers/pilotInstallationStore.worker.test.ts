@@ -5,6 +5,35 @@ import { createDurableOAuthState } from "../src/oauth/durableAuthorizationStore.
 import { sha256Base64Url } from "../src/meta/pilotCrypto.js";
 
 describe("pilot installation Durable Objects", () => {
+  it('does not leave a competing installation record after losing the atomic WABA claim', async () => {
+    const registry = createPilotInstallationRegistry(env.PILOT_INSTALLATIONS);
+    const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 12);
+    const common = { wabaId: crypto.getRandomValues(new Uint32Array(2)).join('').padEnd(10, '2'), phoneNumberId: '800123456789',
+      encryptedAccessToken: { ciphertext: 'synthetic-encrypted', iv: 'nonce', version: 1 as const },
+      connectedAt: new Date().toISOString(), webhookSubscribedAt: new Date().toISOString(), status: 'connected' as const };
+    const ids = [`one_${suffix}`, `two_${suffix}`];
+    const results = await Promise.allSettled(ids.map(tenantId => registry.refreshInstallation({ ...common, tenantId })));
+    expect(results.filter(x => x.status === 'fulfilled')).toHaveLength(1);
+    const winner = await registry.getWabaBindingOwner(common.wabaId);
+    const loser = ids.find(x => x !== winner)!;
+    expect(await registry.getInstallation(loser)).toBeNull();
+    expect(await registry.resolveTenantForWaba(common.wabaId)).toBe(winner);
+  });
+  it('claims a shared WABA atomically and does not let stale cleanup delete its new owner', async () => {
+    const wabaId = crypto.getRandomValues(new Uint32Array(2)).join('').padEnd(10, '1');
+    const route = env.PILOT_INSTALLATIONS.getByName(`waba:${wabaId}`);
+    const first = `first_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const second = `second_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const claims = await Promise.all([route.putWabaRoute(first), route.putWabaRoute(second)]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    const owner = await route.getWabaRoute();
+    expect([first, second]).toContain(owner);
+    await route.deleteWabaRoute(owner!);
+    const next = owner === first ? second : first;
+    await route.putWabaRoute(next);
+    await route.deleteWabaRoute(owner!);
+    expect(await route.getWabaRoute()).toBe(next);
+  });
   it("reads bounded original dispatch receipts only through the tenant-scoped admin route", async () => {
     const tenantId = `receipts_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const stub = env.CONVERSATIONS.getByName(tenantId);
