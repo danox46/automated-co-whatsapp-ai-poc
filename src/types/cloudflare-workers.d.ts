@@ -16,6 +16,7 @@ declare module "cloudflare:workers" {
   export interface DurableObjectState {
     storage: {
       sql: SqlStorage;
+      transactionSync<T>(callback: () => T): T;
       getAlarm(): Promise<number | null>;
       setAlarm(scheduledTime: number | Date): Promise<void>;
       deleteAlarm(): Promise<void>;

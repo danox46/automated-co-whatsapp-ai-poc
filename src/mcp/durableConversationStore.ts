@@ -124,6 +124,8 @@ export type DurableConversationObjectStub = {
     conversationRef: string
   ): Promise<InternalConversationEnforcementState | null>;
   reserveOutboundDispatch(input: OutboundDispatchReservation): Promise<OutboundDispatchReservationResult>;
+  getOutboundDispatchResult(input: { idempotencyKey: string; requestFingerprint: string }): Promise<Exclude<OutboundDispatchReservationResult, { status: "ready" }> | null>;
+  cancelUnsentOutboundDispatch(input: { idempotencyKey: string; requestFingerprint: string }): Promise<void>;
   completeOutboundDispatch(input: OutboundDispatchCompletion): Promise<void>;
   getOutboundPolicy(conversationRef: string): Promise<{
     approvedTemplates: Array<{ name: string; category: string; purpose: string; languageCode?: string; enabled: boolean }>;
@@ -161,12 +163,14 @@ export type OutboundDispatchReservation = {
   expectedPolicyRevision: string;
   now: string;
   notAfter?: string;
+  expectedProviderAccountRef?: string;
+  template?: { name: string; category: string; purpose: string; languageCode: string };
 };
 
 export type OutboundDispatchReservationResult =
   | { status: "ready"; providerAccountRef: string; providerParticipantRef: string }
   | { status: "duplicate"; messageRef: string; providerStatus: "accepted" | "queued" | "sent" }
-  | { status: "blocked"; reason: "state_changed" | "recipient_opted_out" | "automation_paused" | "window_closed" | "in_progress" };
+  | { status: "blocked"; reason: "state_changed" | "recipient_opted_out" | "automation_paused" | "window_closed" | "in_progress" | "template_unavailable" | "template_consent_required" };
 
 export type OutboundDispatchCompletion = {
   idempotencyKey: string;
@@ -246,47 +250,58 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     const inactiveConversationCutoff = daysBefore(nowMs, policy.inactiveConversationRetentionDays);
     const pendingStatusCutoff = daysBefore(nowMs, policy.pendingStatusRetentionDays);
 
-    this.ctx.storage.sql.exec(
-      `DELETE FROM attachment_chunks WHERE attachment_ref IN (
-        SELECT attachment_ref FROM messages WHERE occurred_at < ? AND attachment_ref IS NOT NULL
-      )`,
-      messageCutoff
-    );
-    this.ctx.storage.sql.exec("DELETE FROM messages WHERE occurred_at < ?", messageCutoff);
-    const messagesDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
-    this.ctx.storage.sql.exec(
-      "DELETE FROM pending_message_statuses WHERE occurred_at < ?",
-      pendingStatusCutoff
-    );
-    const pendingStatusesDeleted = this.ctx.storage.sql
-      .exec<CountRow>("SELECT changes() AS count").one().count;
-    this.ctx.storage.sql.exec(
-      `UPDATE conversations SET
-         message_count = (
-           SELECT COUNT(*) FROM messages
-           WHERE messages.conversation_ref = conversations.conversation_ref
-         ),
-         unread_inbound_count = (
-           SELECT COUNT(*) FROM messages
-           WHERE messages.conversation_ref = conversations.conversation_ref
-             AND messages.direction = 'inbound'
-             AND messages.status = 'received'
-         )`
-    );
-    this.ctx.storage.sql.exec(
-      `DELETE FROM conversations
-       WHERE last_message_at < ?
-         AND recipient_opted_out = 0
-         AND automation_paused = 0
-         AND NOT EXISTS (
-           SELECT 1 FROM messages
-           WHERE messages.conversation_ref = conversations.conversation_ref
+    const { messagesDeleted, pendingStatusesDeleted, conversationsDeleted } = this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `DELETE FROM attachment_chunks WHERE attachment_ref IN (
+          SELECT attachment_ref FROM messages WHERE occurred_at < ? AND attachment_ref IS NOT NULL
+        )`,
+        messageCutoff
+      );
+      this.ctx.storage.sql.exec("DELETE FROM messages WHERE occurred_at < ?", messageCutoff);
+      const messagesDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
+      this.ctx.storage.sql.exec(
+        "DELETE FROM pending_message_statuses WHERE occurred_at < ?",
+        pendingStatusCutoff
+      );
+      const pendingStatusesDeleted = this.ctx.storage.sql
+        .exec<CountRow>("SELECT changes() AS count").one().count;
+      this.ctx.storage.sql.exec(
+        `UPDATE conversations SET
+           message_count = (
+             SELECT COUNT(*) FROM messages
+             WHERE messages.conversation_ref = conversations.conversation_ref
+           ),
+           unread_inbound_count = (
+             SELECT COUNT(*) FROM messages
+             WHERE messages.conversation_ref = conversations.conversation_ref
+               AND messages.direction = 'inbound'
+               AND messages.status = 'received'
+           )`
+      );
+      this.ctx.storage.sql.exec(
+        `DELETE FROM conversation_template_consents WHERE conversation_ref IN (
+           SELECT conversation_ref FROM conversations
+           WHERE last_message_at < ? AND recipient_opted_out = 0 AND automation_paused = 0
+             AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.conversation_ref = conversations.conversation_ref)
          )`,
-      inactiveConversationCutoff
-    );
-    const conversationsDeleted = this.ctx.storage.sql
-      .exec<CountRow>("SELECT changes() AS count").one().count;
+        inactiveConversationCutoff
+      );
+      this.ctx.storage.sql.exec(
+        `DELETE FROM conversations
+         WHERE last_message_at < ?
+           AND recipient_opted_out = 0
+           AND automation_paused = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM messages
+             WHERE messages.conversation_ref = conversations.conversation_ref
+           )`,
+        inactiveConversationCutoff
+      );
+      const conversationsDeleted = this.ctx.storage.sql
+        .exec<CountRow>("SELECT changes() AS count").one().count;
 
+      return { messagesDeleted, pendingStatusesDeleted, conversationsDeleted };
+    });
     const nextRunAt = new Date(nowMs + policy.pruneIntervalHours * 60 * 60 * 1000).toISOString();
     this.ctx.storage.sql.exec(
       `INSERT INTO metadata (key, value) VALUES ('retention_last_run_at', ?)
@@ -309,35 +324,41 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   async deleteConversationData(conversationRef: string): Promise<ConversationDeletionResult> {
     if (!conversationRef || conversationRef.length > 200) throw new Error("Invalid conversation reference");
     this.assertInitialized();
-    this.ctx.storage.sql.exec(
-      `DELETE FROM attachment_chunks WHERE attachment_ref IN (
-        SELECT attachment_ref FROM messages WHERE conversation_ref = ? AND attachment_ref IS NOT NULL
-      )`,
-      conversationRef
-    );
-    this.ctx.storage.sql.exec("DELETE FROM messages WHERE conversation_ref = ?", conversationRef);
-    const messagesDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
-    this.ctx.storage.sql.exec("DELETE FROM conversations WHERE conversation_ref = ?", conversationRef);
-    const conversationsDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
-    return { conversationsDeleted, messagesDeleted, pendingStatusesDeleted: 0 };
+    return this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `DELETE FROM attachment_chunks WHERE attachment_ref IN (
+          SELECT attachment_ref FROM messages WHERE conversation_ref = ? AND attachment_ref IS NOT NULL
+        )`,
+        conversationRef
+      );
+      this.ctx.storage.sql.exec("DELETE FROM messages WHERE conversation_ref = ?", conversationRef);
+      const messagesDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
+      this.ctx.storage.sql.exec("DELETE FROM conversation_template_consents WHERE conversation_ref = ?", conversationRef);
+      this.ctx.storage.sql.exec("DELETE FROM conversations WHERE conversation_ref = ?", conversationRef);
+      const conversationsDeleted = this.ctx.storage.sql.exec<CountRow>("SELECT changes() AS count").one().count;
+      return { conversationsDeleted, messagesDeleted, pendingStatusesDeleted: 0 };
+    });
   }
 
   async deleteAllConversationData(): Promise<ConversationDeletionResult> {
     this.assertInitialized();
-    const messagesDeleted = this.ctx.storage.sql.exec<CountRow>(
-      "SELECT COUNT(*) AS count FROM messages"
-    ).one().count;
-    const conversationsDeleted = this.ctx.storage.sql.exec<CountRow>(
-      "SELECT COUNT(*) AS count FROM conversations"
-    ).one().count;
-    const pendingStatusesDeleted = this.ctx.storage.sql.exec<CountRow>(
-      "SELECT COUNT(*) AS count FROM pending_message_statuses"
-    ).one().count;
-    this.ctx.storage.sql.exec("DELETE FROM attachment_chunks");
-    this.ctx.storage.sql.exec("DELETE FROM messages");
-    this.ctx.storage.sql.exec("DELETE FROM pending_message_statuses");
-    this.ctx.storage.sql.exec("DELETE FROM conversations");
-    return { conversationsDeleted, messagesDeleted, pendingStatusesDeleted };
+    return this.ctx.storage.transactionSync(() => {
+      const messagesDeleted = this.ctx.storage.sql.exec<CountRow>(
+        "SELECT COUNT(*) AS count FROM messages"
+      ).one().count;
+      const conversationsDeleted = this.ctx.storage.sql.exec<CountRow>(
+        "SELECT COUNT(*) AS count FROM conversations"
+      ).one().count;
+      const pendingStatusesDeleted = this.ctx.storage.sql.exec<CountRow>(
+        "SELECT COUNT(*) AS count FROM pending_message_statuses"
+      ).one().count;
+      this.ctx.storage.sql.exec("DELETE FROM attachment_chunks");
+      this.ctx.storage.sql.exec("DELETE FROM messages");
+      this.ctx.storage.sql.exec("DELETE FROM pending_message_statuses");
+      this.ctx.storage.sql.exec("DELETE FROM conversation_template_consents");
+      this.ctx.storage.sql.exec("DELETE FROM conversations");
+      return { conversationsDeleted, messagesDeleted, pendingStatusesDeleted };
+    });
   }
 
   async registerConversation(input: {
@@ -697,6 +718,70 @@ export class WhatsAppConversationDurableObject extends DurableObject {
   async reserveOutboundDispatch(input: OutboundDispatchReservation): Promise<OutboundDispatchReservationResult> {
     validateDispatchInput(input);
     this.assertInitialized();
+    const existing = this.readOutboundDispatchResult(input);
+    if (existing) return existing;
+    const conversation = this.ctx.storage.sql.exec<InternalConversationRow>(
+      "SELECT * FROM conversations WHERE conversation_ref = ?",
+      input.conversationRef
+    ).toArray()[0];
+    if (!conversation || conversation.policy_revision !== input.expectedPolicyRevision ||
+        (input.expectedProviderAccountRef !== undefined && conversation.provider_account_ref !== input.expectedProviderAccountRef)) {
+      return { status: "blocked", reason: "state_changed" };
+    }
+    if (conversation.recipient_opted_out === 1) return { status: "blocked", reason: "recipient_opted_out" };
+    if (conversation.automation_paused === 1) return { status: "blocked", reason: "automation_paused" };
+    if (input.kind === "approved_template") {
+      const template = input.template;
+      if (!template) return { status: "blocked", reason: "template_unavailable" };
+      const current = this.ctx.storage.sql.exec<{
+        category: string; purpose: string; language_code: string; enabled: number;
+      }>("SELECT category, purpose, language_code, enabled FROM approved_templates WHERE name = ?", template.name).toArray()[0];
+      if (!current || current.enabled !== 1) return { status: "blocked", reason: "template_unavailable" };
+      if (current.category !== template.category || current.purpose !== template.purpose || current.language_code !== template.languageCode) {
+        return { status: "blocked", reason: "state_changed" };
+      }
+      const consent = this.ctx.storage.sql.exec<CountRow>(
+        `SELECT COUNT(*) AS count FROM conversation_template_consents WHERE conversation_ref = ?
+         AND ((consent_type = 'category' AND consent_value = ?) OR (consent_type = 'purpose' AND consent_value = ?))`,
+        input.conversationRef, current.category, current.purpose
+      ).one();
+      if (consent.count !== 2) return { status: "blocked", reason: "template_consent_required" };
+    }
+    if (input.kind === "free_form_reply") {
+      if (!input.notAfter || input.now >= input.notAfter ||
+          !conversation.last_verified_user_inbound_at ||
+          input.now >= new Date(Date.parse(conversation.last_verified_user_inbound_at) + 24 * 60 * 60 * 1000).toISOString()) {
+        return { status: "blocked", reason: "window_closed" };
+      }
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO outbound_dispatches
+       (idempotency_key, request_fingerprint, conversation_ref, kind, status, reserved_at)
+       VALUES (?, ?, ?, ?, 'reserved', ?)`,
+      input.idempotencyKey, input.requestFingerprint, input.conversationRef, input.kind, input.now
+    );
+    return {
+      status: "ready",
+      providerAccountRef: conversation.provider_account_ref,
+      providerParticipantRef: conversation.provider_participant_ref
+    };
+  }
+
+  async getOutboundDispatchResult(input: { idempotencyKey: string; requestFingerprint: string }) {
+    this.assertInitialized();
+    return this.readOutboundDispatchResult(input);
+  }
+
+  /** Only the holder of a ready reservation may cancel, and only before provider I/O. */
+  async cancelUnsentOutboundDispatch(input: { idempotencyKey: string; requestFingerprint: string }): Promise<void> {
+    this.assertInitialized();
+    this.ctx.storage.sql.exec(
+      "DELETE FROM outbound_dispatches WHERE idempotency_key = ? AND request_fingerprint = ? AND status = 'reserved'",
+      input.idempotencyKey, input.requestFingerprint
+    );
+  }
+
+  private readOutboundDispatchResult(input: { idempotencyKey: string; requestFingerprint: string }): Exclude<OutboundDispatchReservationResult, { status: "ready" }> | null {
     const existing = this.ctx.storage.sql.exec<{
       request_fingerprint: string;
       status: "reserved" | "sent";
@@ -716,37 +801,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       }
       return { status: "blocked", reason: "in_progress" };
     }
-    const conversation = this.ctx.storage.sql.exec<InternalConversationRow>(
-      "SELECT * FROM conversations WHERE conversation_ref = ?",
-      input.conversationRef
-    ).toArray()[0];
-    if (!conversation || conversation.policy_revision !== input.expectedPolicyRevision) {
-      return { status: "blocked", reason: "state_changed" };
-    }
-    if (conversation.recipient_opted_out === 1) return { status: "blocked", reason: "recipient_opted_out" };
-    if (conversation.automation_paused === 1) return { status: "blocked", reason: "automation_paused" };
-    if (input.kind === "free_form_reply") {
-      if (!input.notAfter || input.now >= input.notAfter ||
-          !conversation.last_verified_user_inbound_at ||
-          input.now >= new Date(Date.parse(conversation.last_verified_user_inbound_at) + 24 * 60 * 60 * 1000).toISOString()) {
-        return { status: "blocked", reason: "window_closed" };
-      }
-    }
-    this.ctx.storage.sql.exec(
-      `INSERT INTO outbound_dispatches
-       (idempotency_key, request_fingerprint, conversation_ref, kind, status, reserved_at)
-       VALUES (?, ?, ?, ?, 'reserved', ?)`,
-      input.idempotencyKey,
-      input.requestFingerprint,
-      input.conversationRef,
-      input.kind,
-      input.now
-    );
-    return {
-      status: "ready",
-      providerAccountRef: conversation.provider_account_ref,
-      providerParticipantRef: conversation.provider_participant_ref
-    };
+    return null;
   }
 
   async completeOutboundDispatch(input: OutboundDispatchCompletion): Promise<void> {

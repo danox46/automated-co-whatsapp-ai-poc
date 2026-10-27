@@ -44,6 +44,9 @@ import {
   createMetaMessagingCapability
 } from "../meta/messagingCapability.js";
 import { createWhatsAppPolicyAdminHandler } from "../meta/policyAdmin.js";
+import { decryptPilotSecret } from "../meta/pilotCrypto.js";
+import { createSandboxBotBridge } from "../meta/sandboxBotBridge.js";
+import { createSandboxFlowAdmin } from "../meta/sandboxFlowAdmin.js";
 import { opaqueConversationRef } from "../meta/conversationEvents.js";
 import {
   readWhatsAppSandboxConfig,
@@ -63,6 +66,7 @@ export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & WhatsAppSandboxEnv & 
   META_EMBEDDED_SIGNUP_SESSION_VERSION?: string;
   INSTALLATION_ENCRYPTION_KEY?: string;
   PILOT_ADMIN_TOKEN?: string;
+  SANDBOX_BOT_BRIDGE_TOKEN?: string;
   PUBLIC_ORIGIN?: string;
   OAUTH_SIGNING_KEY_ID?: string;
   OAUTH_SIGNING_PRIVATE_JWK?: string;
@@ -133,6 +137,23 @@ export function createPersistentWhatsAppWorker(
         writer
       }) : undefined;
 
+      const sandboxBotResponse = await createSandboxBotBridge({
+        token: env.SANDBOX_BOT_BRIDGE_TOKEN,
+        sandbox: sandboxConfigurationValid ? sandbox : null,
+        conversations: env.CONVERSATIONS,
+        messaging: runtimeMessaging,
+        listFlows: sandbox && graph ? async () => {
+          const installation = await registry.getInstallation(sandbox.tenantId);
+          if (!installation || installation.status !== "connected" || installation.wabaId !== sandbox.wabaId) {
+            throw new Error("SANDBOX_INSTALLATION_NOT_CONNECTED");
+          }
+          const accessToken = await decryptPilotSecret(installation.encryptedAccessToken, env.INSTALLATION_ENCRYPTION_KEY as string);
+          return graph.listFlows(accessToken, sandbox.wabaId);
+        } : undefined,
+        resource: safePublicOrigin(env.PUBLIC_ORIGIN) ?? ""
+      })(request);
+      if (sandboxBotResponse) return sandboxBotResponse;
+
       let runtimeTokenVerifier = options.verifyToken;
       let resource = safePublicOrigin(env.PUBLIC_ORIGIN);
       if (oauthConfigured && resource) {
@@ -179,6 +200,20 @@ export function createPersistentWhatsAppWorker(
             }
           }, { status: 503, headers: noStoreHeaders() });
         }
+        const flowAdminResponse = await createSandboxFlowAdmin({
+          adminToken: env.PILOT_ADMIN_TOKEN,
+          wabaId: sandboxConfigurationValid ? sandbox?.wabaId : undefined,
+          graph: graph ?? undefined,
+          accessToken: async () => {
+            if (!sandbox) throw new Error("SANDBOX_NOT_CONFIGURED");
+            const installation = await registry.getInstallation(sandbox.tenantId);
+            if (!installation || installation.status !== "connected" || installation.wabaId !== sandbox.wabaId) {
+              throw new Error("SANDBOX_INSTALLATION_NOT_CONNECTED");
+            }
+            return decryptPilotSecret(installation.encryptedAccessToken, env.INSTALLATION_ENCRYPTION_KEY as string);
+          }
+        })(request);
+        if (flowAdminResponse) return flowAdminResponse;
         const pilot = createPilotOnboardingHandler(env as PersistentWhatsAppWorkerEnv & PilotOnboardingEnv, {
           registry,
           graph: graph as ReturnType<typeof createMetaGraphClient>,
@@ -251,6 +286,7 @@ export function createPersistentWhatsAppWorker(
           sandboxConfigured: Boolean(sandbox),
           sandboxConfigurationValid,
           sandboxRecipientRestriction: sandbox ? "server-allowlist" : "not-configured",
+          sandboxBotBridgeConfigured: Boolean(sandbox && env.SANDBOX_BOT_BRIDGE_TOKEN && runtimeMessaging),
           oauthConfigured,
           tenantRouting: "waba-sharded",
           oauthVerifierConfigured: Boolean(runtimeTokenVerifier),
