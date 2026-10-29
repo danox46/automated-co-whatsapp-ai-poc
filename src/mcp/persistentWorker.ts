@@ -189,6 +189,7 @@ export function createPersistentWhatsAppWorker(
           morning = new MorningOperatorSessions({origin:resource,issuer:env.MORNING_ISSUER!,clientId:env.MORNING_CUSTOMER_CLIENT_ID!,
             workspacePolicy:'enrolled-owner',encryptionKey:env.INSTALLATION_ENCRYPTION_KEY!,store:oauthState.morningStore,request:options.morningRequest,
             ...(pilotConfigured ? {customerSetup:{
+              nativeRedirectUri:nativeClient?.redirectUris[0],
               status:async(tenantId:string)=>{const value=await registry.getInstallation(tenantId);return {connected:value?.status==='connected',...(value?.verifiedName?{name:value.verifiedName}:{}),...(value?.displayPhoneNumber?{number:value.displayPhoneNumber}:{})};},
               begin:async(input:{tenantId:string;workspaceId:string;token:string;createdAt:string;expiresAt:string})=>{
                 const token=await registry.createInvite({tenantId:input.tenantId,label:'WhatsApp',cohortRole:'client',expiresAt:input.expiresAt,customerWorkspaceId:input.workspaceId},new Date(),{token:input.token,createdAt:input.createdAt});

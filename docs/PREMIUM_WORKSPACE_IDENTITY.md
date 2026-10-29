@@ -63,3 +63,16 @@ Customer setup verification, 2026-10-28:
 - Companion ARP evaluator now verifies two empty owners through the real issuer
   and consumer. Identities, provider state and invitation creation are synthetic.
 - No messages sent, Meta grants created, or production deployment performed.
+
+
+Native connection export (development): a connected owner's setup page offers
+`format=connection` when the registered native callback is configured. The file
+contains version/kind, label, MCP origin, workspace ID, opaque installation
+reference and exact callback. It contains no provider/session tokens or local
+paths. Current ownership and connected-installation reference are checked on
+export. An unconnected workspace returns 409; unavailable native setup returns
+503. Reopening native enrollment carries both workspace and installation.
+
+The native branch consumes this file directly through `meta:connect`; it derives
+its own protected OAuth path under the current user's installation state. Full
+business runtime preparation/agent selection remains separate from this grant.

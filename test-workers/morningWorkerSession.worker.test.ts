@@ -6,6 +6,7 @@ import { createPilotInstallationRegistry } from '../src/meta/pilotInstallationSt
 import { encryptPilotSecret, randomBase64Url, sha256Base64Url } from '../src/meta/pilotCrypto.js';
 import { NATIVE_WHATSAPP_BOT_CLIENT_ID } from '../src/oauth/nativeBotClient.js';
 import { SUPPORTED_WHATSAPP_MCP_SCOPES } from '../src/mcp/auth.js';
+import {premiumWorkspaceTenant} from '../src/oauth/morningSessions.js';
 import { opaqueInstallationRef } from '../src/meta/installationIdentity.js';
 
 describe('Worker Morning identity routing', () => {
@@ -125,7 +126,7 @@ it('opens customer setup and resumes one durable invitation without accepting an
  const origin='https://pilot.test',issuer='https://morning.fixture.test',workspaceId='prem-onboarding',subject=`morning:oidc-${'b'.repeat(32)}`;
  const prefix=crypto.randomUUID();
  const namespace={getByName:(name:string)=>env.PILOT_INSTALLATIONS.getByName(prefix+name)};
- const effective={...env,PILOT_INSTALLATIONS:namespace,MORNING_ISSUER:issuer,MORNING_CUSTOMER_CLIENT_ID:'whatsapp-customer'} as unknown as PersistentWhatsAppWorkerEnv;
+ const effective={...env,PILOT_INSTALLATIONS:namespace,BOT_OAUTH_REDIRECT_URI:'http://127.0.0.1:9468/callback',MORNING_ISSUER:issuer,MORNING_CUSTOMER_CLIENT_ID:'whatsapp-customer'} as unknown as PersistentWhatsAppWorkerEnv;
  const state=createDurableOAuthState(env.OAUTH_STATE),rawSession=randomBase64Url(32),now=Math.floor(Date.now()/1000),csrf=randomBase64Url(32);
  const url=origin+'/premium/whatsapp/setup?workspace_id='+workspaceId;
  const value={subject,workspaceId,identityAccessToken:'synthetic-owner-token',returnTo:url,csrf,setupIntent:{token:randomBase64Url(32),createdAt:new Date(now*1000).toISOString(),expiresAt:new Date((now+600)*1000).toISOString()}};
@@ -144,5 +145,9 @@ it('opens customer setup and resumes one durable invitation without accepting an
  expect(await registry.getInvite(invite)).toMatchObject({customerWorkspaceId:workspaceId});
  const entry=await worker.fetch(new Request(first.headers.get('location')!),effective);expect(entry.status).toBe(303);
  const signup=await worker.fetch(new Request(entry.headers.get('location')!,{headers:{cookie:entry.headers.get('set-cookie')!.split(';')[0]}}),effective);expect(signup.status).toBe(200);expect(await signup.text()).toContain('Morning Premium');
+ const tenantId=await premiumWorkspaceTenant(issuer,workspaceId),wabaId='800123456789',phoneNumberId='900123456789';
+ await registry.refreshInstallation({tenantId,wabaId,phoneNumberId,encryptedAccessToken:await encryptPilotSecret('synthetic-provider-token',effective.INSTALLATION_ENCRYPTION_KEY!),connectedAt:new Date().toISOString(),webhookSubscribedAt:new Date().toISOString(),status:'connected'});
+ const download=await worker.fetch(new Request(url+'&format=connection',{headers}),effective);expect(download.status).toBe(200);
+ expect(await download.json()).toMatchObject({kind:'morning-whatsapp-connection',connection:{workspaceId,origin,installationRef:await opaqueInstallationRef(tenantId,wabaId,phoneNumberId,effective.CONVERSATION_REF_SECRET),redirectUri:effective.BOT_OAUTH_REDIRECT_URI}});
  const wrong=await worker.fetch(new Request(url.replace(workspaceId,'prem-other'),{method:'POST',headers:{...headers,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({csrf})}),effective);expect(wrong.status).toBe(409);
 });

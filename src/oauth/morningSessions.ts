@@ -34,7 +34,7 @@ export class MorningOperatorSessions {
   constructor(private readonly options: { origin: string; issuer: string; clientId: string; encryptionKey: string;
     bindings?: unknown; workspacePolicy?: 'enrolled-owner'; store: MorningLoginStore; installationConnected: (tenantId: string) => Promise<boolean>;
     installationReference?: (tenantId: string) => Promise<string | null>;
-    customerSetup?: {begin:(input:{tenantId:string;workspaceId:string;token:string;createdAt:string;expiresAt:string})=>Promise<string>;status:(tenantId:string)=>Promise<{connected:boolean;name?:string;number?:string;installationRef?:string}>};
+    customerSetup?: {nativeRedirectUri?:string;begin:(input:{tenantId:string;workspaceId:string;token:string;createdAt:string;expiresAt:string})=>Promise<string>;status:(tenantId:string)=>Promise<{connected:boolean;name?:string;number?:string;installationRef?:string}>};
     request?: NonNullable<oidc.DiscoveryRequestOptions[typeof oidc.customFetch]>; now?: () => number;
   }) {
     for (const value of [options.origin, options.issuer]) { const url = new URL(value); if (url.protocol !== 'https:' || url.origin !== value) throw new Error('Exact HTTPS sign-in origins required'); }
@@ -161,13 +161,24 @@ export class MorningOperatorSessions {
     if(!['GET','POST'].includes(request.method)) return this.problem('Use the connection form.',405);
     let workspaceId:string|undefined;
     try{workspaceId=this.requestedWorkspace(request.url);}catch{return this.problem('Choose one valid workspace from Premium setup.');}
+    const formats=new URL(request.url).searchParams.getAll('format');if(formats.length>1 || formats.length===1&&formats[0]!=='connection')return this.problem('Invalid setup format.');
     const current=await this.session(request);
     if(!current) return request.method==='GET'?this.start(request):this.problem('Sign in again to continue setup.',401);
     if(current instanceof Response) return current;
     if(workspaceId!==current.value.workspaceId || !current.value.setupIntent) return request.method==='GET'?this.start(request):this.problem('Restart setup for this workspace.',409);
     const tenantId=await premiumWorkspaceTenant(this.options.issuer,workspaceId!),status=await this.options.customerSetup!.status(tenantId);
+    if(request.method==='GET' && formats[0]==='connection'){
+      if(!status.connected)return this.problem('Connect WhatsApp before downloading its connection file.',409);
+      const assigned=await this.connected(current.value.subject,workspaceId),reference=assigned.find(value=>value.tenantId===tenantId)?.installationRef;
+      const redirectUri=this.options.customerSetup!.nativeRedirectUri;
+      if(!reference || !redirectUri)return this.problem('Native agent setup is not available yet.',503);
+      return Response.json({version:1,kind:'morning-whatsapp-connection',connection:{label:(status.name??'WhatsApp business').slice(0,120),origin:this.options.origin,workspaceId,installationRef:reference,redirectUri}},
+       {headers:{'Cache-Control':'no-store','Content-Disposition':'attachment; filename="morning-whatsapp-connection.json"','X-Content-Type-Options':'nosniff'}});
+    }
     if(request.method==='GET') {
-      const details=status.connected?`<p><strong>${escape(status.name??'WhatsApp business')}</strong>${status.number?'<br>'+escape(status.number):''}</p><p>WhatsApp is connected. Continue in Premium setup to choose the agent that handles conversations.</p>`:
+      const download=new URL(request.url);download.searchParams.set('format','connection');
+      const nativeLink=this.options.customerSetup!.nativeRedirectUri?`<p><a href="${escape(download.href)}">Download agent connection</a></p>`:'';
+      const details=status.connected?`<p><strong>${escape(status.name??'WhatsApp business')}</strong>${status.number?'<br>'+escape(status.number):''}</p><p>WhatsApp is connected. ${nativeLink?'Download the connection file for your local agent.':'Agent setup is not available on this server yet.'}</p>${nativeLink}`:
         `<p>Connect your business number so Morning can receive customer messages and send replies.</p><form method="post" action="${escape(request.url)}"><input type="hidden" name="csrf" value="${escape(current.value.csrf)}"><button type="submit">Continue to Meta setup</button></form>`;
       return this.page(status.connected?'WhatsApp connected':'Connect WhatsApp',details);
     }

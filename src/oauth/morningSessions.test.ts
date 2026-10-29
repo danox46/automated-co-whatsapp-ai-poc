@@ -40,7 +40,7 @@ async function fixture(multiple = false, workspaceId?: string, setup=false) {
   const connected = new Set(multiple ? ['morning-demo', 'client-b'] : ['morning-demo']);
   const sessions = new MorningOperatorSessions({ origin, issuer, clientId, encryptionKey: 'a'.repeat(43),
     bindings: [{ subject, installations: [{ tenantId: 'morning-demo', label: 'Morning demo' }, ...(multiple ? [{ tenantId: 'client-b', label: 'Business B' }] : [])] }],
-    ...(workspaceId ? {workspacePolicy:'enrolled-owner' as const} : {}), ...(setup?{customerSetup:{begin:async(value:unknown)=>{setupCalls.push(value);return origin+'/pilot/whatsapp/connect?invite=synthetic';},status:async()=>({connected:false})}}:{}), store, request, now: () => now, installationConnected: async id => connected.has(id),
+    ...(workspaceId ? {workspacePolicy:'enrolled-owner' as const} : {}), ...(setup?{customerSetup:{begin:async(value:unknown)=>{setupCalls.push(value);return origin+'/pilot/whatsapp/connect?invite=synthetic';},nativeRedirectUri:'http://127.0.0.1:9468/callback',status:async(tenant:string)=>({connected:connected.has(tenant),name:'Example business'})}}:{}), store, request, now: () => now, installationConnected: async id => connected.has(id),
     installationReference: async id => `inst_${(id === 'client-b' ? 'b' : 'a').repeat(32)}` });
   const returnTo = origin + (setup?'/premium/whatsapp/setup?flow=setup':'/oauth/authorize?client_id=urn%3Amorning%3Awhatsapp-bot&state=native-state') + (workspaceId ? '&workspace_id=' + workspaceId : '');
   const begin = async () => {
@@ -180,4 +180,16 @@ describe('Customer-owned WhatsApp setup',()=>{
   const f=await fixture(false,'prem-setup',true);
   const response=await f.sessions.handle(new Request(f.returnTo));expect(response?.status).toBe(303);expect(f.setupCalls).toHaveLength(0);
  });
+});
+
+it('downloads only the authenticated connected workspace reference for native enrollment',async()=>{
+ const f=await fixture(false,'prem-download',true),finish=(await(await f.begin()).finish())!,headers={cookie:cookie(finish,'__Host-wa_customer_session')};
+ const download=f.returnTo+'&format=connection';
+ expect((await f.sessions.handle(new Request(download,{headers})))?.status).toBe(409);
+ const tenant=await premiumWorkspaceTenant(issuer,'prem-download');f.connected.add(tenant);
+ const response=(await f.sessions.handle(new Request(download,{headers})))!;
+ expect(response.status).toBe(200);expect(response.headers.get('content-disposition')).toContain('attachment');
+ const value=await response.json();expect(value).toEqual({version:1,kind:'morning-whatsapp-connection',connection:{label:'Example business',origin,workspaceId:'prem-download',installationRef:'inst_'+ 'a'.repeat(32),redirectUri:'http://127.0.0.1:9468/callback'}});
+ expect(JSON.stringify(value)).not.toContain('identityAccessToken');
+ f.revoke();expect((await f.sessions.handle(new Request(download,{headers})))?.status).toBe(401);
 });
