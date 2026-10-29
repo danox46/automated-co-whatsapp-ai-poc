@@ -83,6 +83,7 @@ export type PersistentWhatsAppWorkerEnv = MetaWebhookEnv & WhatsAppSandboxEnv & 
   BOT_OAUTH_REDIRECT_URI?: string;
   MORNING_ISSUER?: string;
   MORNING_CLIENT_ID?: string;
+  MORNING_CUSTOMER_CLIENT_ID?: string;
   MORNING_OPERATOR_BINDINGS?: string;
   CONVERSATION_MESSAGE_RETENTION_DAYS?: string;
   CONVERSATION_INACTIVE_RETENTION_DAYS?: string;
@@ -178,7 +179,22 @@ export function createPersistentWhatsAppWorker(
         const nativeClient = nativeBotOAuthClient(env.BOT_OAUTH_REDIRECT_URI);
         if (nativeClient?.clientId === env.OAUTH_CLIENT_ID) throw new Error("Native and ChatGPT OAuth registrations must remain distinct");
         let morning: MorningOperatorSessions | undefined;
-        if (env.MORNING_ISSUER && env.MORNING_CLIENT_ID && env.MORNING_OPERATOR_BINDINGS && env.INSTALLATION_ENCRYPTION_KEY) {
+        const requestedWorkspace=new URL(request.url).searchParams.has('workspace_id');
+        const customerRoute=requestedWorkspace || pathname.startsWith('/premium/auth/');
+        if(customerRoute && (!env.MORNING_CUSTOMER_CLIENT_ID || !env.MORNING_ISSUER || !env.INSTALLATION_ENCRYPTION_KEY || env.MORNING_CUSTOMER_CLIENT_ID===env.MORNING_CLIENT_ID)) {
+          return Response.json({error:'customer_connection_unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});
+        }
+        if(customerRoute) {
+          morning = new MorningOperatorSessions({origin:resource,issuer:env.MORNING_ISSUER!,clientId:env.MORNING_CUSTOMER_CLIENT_ID!,
+            workspacePolicy:'enrolled-owner',encryptionKey:env.INSTALLATION_ENCRYPTION_KEY!,store:oauthState.morningStore,request:options.morningRequest,
+            installationConnected:async tenantId=>(await registry.getInstallation(tenantId))?.status==='connected',
+            installationReference:async tenantId=>{
+              const installation=await registry.getInstallation(tenantId);
+              return installation?.status==='connected' ? opaqueInstallationRef(tenantId,installation.wabaId,installation.phoneNumberId,env.CONVERSATION_REF_SECRET) : null;
+            }});
+          const loginResponse=await morning.handle(request); if(loginResponse) return loginResponse;
+        }
+        if (!customerRoute && env.MORNING_ISSUER && env.MORNING_CLIENT_ID && env.MORNING_OPERATOR_BINDINGS && env.INSTALLATION_ENCRYPTION_KEY) {
           // The resolver closes over this request's Durable Object stubs and
           // installation registry. Never cache request-owned I/O across fetches.
           morning = new MorningOperatorSessions({ origin: resource, issuer: env.MORNING_ISSUER, clientId: env.MORNING_CLIENT_ID,
@@ -202,6 +218,7 @@ export function createPersistentWhatsAppWorker(
           }, ...(nativeClient ? [nativeClient] : [])]),
           store: oauthState.store,
           resolveSession: async (authorizationRequest) => {
+            if(customerRoute) return morning!.resolve(authorizationRequest);
             if (morning && new URL(authorizationRequest.url).searchParams.get('client_id') === NATIVE_WHATSAPP_BOT_CLIENT_ID) return morning.resolve(authorizationRequest);
             const rawSession = readCookie(authorizationRequest, PILOT_SESSION_COOKIE);
             // Preserve an existing business's Embedded Signup session. Once it

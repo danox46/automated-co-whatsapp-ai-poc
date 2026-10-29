@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type * as oidc from 'openid-client';
-import { MorningOperatorSessions, type MorningLoginStore } from './morningSessions.js';
+import { MorningOperatorSessions, premiumWorkspaceTenant, type MorningLoginStore } from './morningSessions.js';
 import { signRs256Jwt, sha256Base64Url } from './jwt.js';
 
 const origin = 'https://whatsapp.fixture.test', issuer = 'https://morning.fixture.test', clientId = 'whatsapp-operator';
 const subject = `morning:oidc-${'a'.repeat(32)}`;
 const cookie = (response: Response, name: string) => response.headers.getSetCookie().find(x => x.startsWith(name + '='))?.split(';')[0] ?? '';
-async function fixture(multiple = false) {
+async function fixture(multiple = false, workspaceId?: string) {
+  let workspaceClaims: Record<string, unknown> = workspaceId ? {workspace_id:workspaceId,workspace_role:"owner"} : {};
   const rows = new Map<string, { value: string; expires: number }>(); let now = Date.now(), tokenCalls = 0, validUserInfo = true, tokenSubject = subject, badNonce = false;
   const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
   const privateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey), publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
@@ -25,30 +26,30 @@ async function fixture(multiple = false) {
     if (url.pathname.endsWith('/jwks')) return Response.json({ keys: [{ ...publicJwk, kid: 'morning-test', alg: 'RS256', use: 'sig' }] });
     if (url.pathname.endsWith('/token')) {
       tokenCalls++; const fields = new URLSearchParams(await req.text());
-      expect(fields.get('client_id')).toBe(clientId); expect(fields.get('redirect_uri')).toBe(origin + '/auth/callback');
+      expect(fields.get('client_id')).toBe(clientId); expect(fields.get('redirect_uri')).toBe(origin + (workspaceId ? '/premium/auth/callback' : '/auth/callback'));
       expect(await sha256Base64Url(fields.get('code_verifier')!)).toBe(authorization.searchParams.get('code_challenge'));
       const timestamp = Math.floor(Date.now() / 1000);
       return Response.json({ access_token: 'synthetic-morning-identity-access', token_type: 'Bearer', expires_in: 3600,
         id_token: await signRs256Jwt({ alg: 'RS256', kid: 'morning-test' }, { iss: issuer, sub: tokenSubject, aud: clientId, iat: timestamp, exp: timestamp + 300,
-          nonce: badNonce ? 'wrong-nonce' : authorization.searchParams.get('nonce') }, privateJwk) });
+          ...workspaceClaims, nonce: badNonce ? 'wrong-nonce' : authorization.searchParams.get('nonce') }, privateJwk) });
     }
-    if (url.pathname.endsWith('/userinfo')) return validUserInfo ? Response.json({ sub: tokenSubject }) : Response.json({ error: 'invalid_token' }, { status: 401 });
+    if (url.pathname.endsWith('/userinfo')) return validUserInfo ? Response.json({ sub: tokenSubject, ...workspaceClaims }) : Response.json({ error: 'invalid_token' }, { status: 401 });
     throw new Error('Unexpected fixture request');
   };
   const connected = new Set(multiple ? ['morning-demo', 'client-b'] : ['morning-demo']);
   const sessions = new MorningOperatorSessions({ origin, issuer, clientId, encryptionKey: 'a'.repeat(43),
     bindings: [{ subject, installations: [{ tenantId: 'morning-demo', label: 'Morning demo' }, ...(multiple ? [{ tenantId: 'client-b', label: 'Business B' }] : [])] }],
-    store, request, now: () => now, installationConnected: async id => connected.has(id),
+    ...(workspaceId ? {workspacePolicy:'enrolled-owner' as const} : {}), store, request, now: () => now, installationConnected: async id => connected.has(id),
     installationReference: async id => `inst_${(id === 'client-b' ? 'b' : 'a').repeat(32)}` });
-  const returnTo = origin + '/oauth/authorize?client_id=urn%3Amorning%3Awhatsapp-bot&state=native-state';
+  const returnTo = origin + '/oauth/authorize?client_id=urn%3Amorning%3Awhatsapp-bot&state=native-state' + (workspaceId ? '&workspace_id=' + workspaceId : '');
   const begin = async () => {
     const response = await sessions.start(new Request(returnTo)); expect(response.status).toBe(303);
     authorization = new URL(response.headers.get('location')!);
-    const flowCookie = cookie(response, '__Host-wa_morning_flow');
-    const callback = new URL(origin + '/auth/callback'); callback.searchParams.set('state', authorization.searchParams.get('state')!); callback.searchParams.set('code', 'synthetic-code'); callback.searchParams.set('iss', issuer);
+    const flowCookie = cookie(response, workspaceId ? '__Host-wa_customer_flow' : '__Host-wa_morning_flow');
+    const callback = new URL(origin + (workspaceId ? '/premium/auth/callback' : '/auth/callback')); callback.searchParams.set('state', authorization.searchParams.get('state')!); callback.searchParams.set('code', 'synthetic-code'); callback.searchParams.set('iss', issuer);
     return { callback, flowCookie, finish: () => sessions.handle(new Request(callback, { headers: { cookie: flowCookie } })) };
   };
-  return { sessions, rows, begin, returnTo, connected, tokenCalls: () => tokenCalls,
+  return { sessions, rows, begin, returnTo, connected, claims:(value:Record<string,unknown>)=>{workspaceClaims=value;}, authorization:()=>authorization, tokenCalls: () => tokenCalls,
     revoke: () => { validUserInfo = false; }, unknownSubject: () => { tokenSubject = `morning:oidc-${'b'.repeat(32)}`; }, corruptNonce: () => { badNonce = true; }, advance: (ms: number) => { now += ms; } };
 }
 describe('Morning operator to WhatsApp installation sign-in', () => {
@@ -111,4 +112,50 @@ describe('Morning operator to WhatsApp installation sign-in', () => {
     expect((await flow.finish())?.status).toBe(400); expect(f.tokenCalls()).toBe(0);
     expect(() => new MorningOperatorSessions({ origin, issuer, clientId: 'confio-sandbox', encryptionKey: 'a'.repeat(43), bindings: [], store: {} as MorningLoginStore, installationConnected: async () => true })).toThrow('separate');
   });
+});
+
+
+describe('Premium workspace WhatsApp identity', () => {
+  it('carries the selected workspace to Morning with a separate browser callback and cookie', async () => {
+    const f=await fixture(false,'prem-one');
+    await f.begin();
+    expect(f.authorization().searchParams.get('workspace_id')).toBe('prem-one');
+    expect(f.authorization().searchParams.get('redirect_uri')).toBe(origin+'/premium/auth/callback');
+  });
+  it('rejects foreign workspace and non-owner claims before installation lookup', async () => {
+    for(const claims of [{workspace_id:'prem-other',workspace_role:'owner'},{workspace_id:'prem-one',workspace_role:'member'},{}]) {
+      const f=await fixture(false,'prem-one'); const flow=await f.begin(); f.claims(claims);
+      const response=(await flow.finish())!; expect(response.status).toBe(403);
+      expect(cookie(response,'__Host-wa_customer_session')).toBe('');
+    }
+  });
+  it('does not inherit operator installations even for the same identity', async () => {
+    const f=await fixture(false,'prem-one'); const response=(await(await f.begin()).finish())!;
+    expect(response.status).toBe(403);
+    expect(cookie(response,'__Host-wa_customer_session')).toBe('');
+  });
+  it('requires one workspace selector and rejects it in the legacy flow', async () => {
+    const f=await fixture(false,'prem-one');
+    for(const query of ['', '&workspace_id=prem-one&workspace_id=prem-two','&workspace_id=../morning']) {
+      expect((await f.sessions.start(new Request(origin+'/oauth/authorize?client_id=x'+query))).status).toBe(400);
+    }
+    const old=await fixture(); expect((await old.sessions.start(new Request(old.returnTo+'&workspace_id=prem-one'))).status).toBe(400);
+  });
+});
+
+it('keeps two enrolled workspaces of one owner separate through sign-in and fresh membership checks', async()=>{
+  const a=await fixture(false,'prem-a'), b=await fixture(false,'prem-b');
+  const tenantA=await premiumWorkspaceTenant(issuer,'prem-a'),tenantB=await premiumWorkspaceTenant(issuer,'prem-b');
+  expect(tenantA).not.toBe(tenantB);
+  a.connected.add(tenantA); b.connected.add(tenantB);
+  const flow=await a.begin(),response=(await flow.finish())!, responseB=(await(await b.begin()).finish())!;
+  expect(response.status).toBe(303); expect(responseB.status).toBe(303);
+  const sessionCookie=cookie(response,'__Host-wa_customer_session');
+  expect(await a.sessions.resolve(new Request(a.returnTo,{headers:{cookie:sessionCookie}}))).toMatchObject({tenantId:tenantA,subject});
+  expect(await b.sessions.resolve(new Request(b.returnTo,{headers:{cookie:cookie(responseB,'__Host-wa_customer_session')}}))).toMatchObject({tenantId:tenantB,subject});
+  const changed=await a.sessions.resolve(new Request(b.returnTo,{headers:{cookie:sessionCookie}})) as Response;
+  expect(changed.status).toBe(303); expect(new URL(changed.headers.get('location')!).searchParams.get('workspace_id')).toBe('prem-b');
+  a.claims({workspace_id:'prem-a',workspace_role:'member'});
+  expect((await a.sessions.resolve(new Request(a.returnTo,{headers:{cookie:sessionCookie}})) as Response).status).toBe(401);
+  expect(JSON.stringify([...a.rows.values()])).not.toContain('synthetic-morning-identity-access');
 });

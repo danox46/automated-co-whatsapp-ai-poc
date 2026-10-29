@@ -99,3 +99,23 @@ describe('Worker Morning identity routing', () => {
     expect(fresh.status).toBe(303); expect(new URL(fresh.headers.get('location')!).origin).toBe(issuer);
   });
 });
+
+it('routes enrolled workspaces through the customer identity registration without operator bindings or pilot cookie fallback',async()=>{
+ const issuer='https://morning.fixture.test';
+ const effective={...env,MORNING_ISSUER:issuer,MORNING_CUSTOMER_CLIENT_ID:'whatsapp-customer'} as unknown as PersistentWhatsAppWorkerEnv;
+ const worker=createPersistentWhatsAppWorker({morningRequest:async()=>Response.json({issuer,
+ authorization_endpoint:issuer+'/integrations/identity/authorize',token_endpoint:issuer+'/integrations/identity/token',
+ userinfo_endpoint:issuer+'/integrations/identity/userinfo',jwks_uri:issuer+'/integrations/identity/jwks',response_types_supported:['code'],
+ subject_types_supported:['public'],id_token_signing_alg_values_supported:['RS256'],token_endpoint_auth_methods_supported:['none'],code_challenge_methods_supported:['S256']})});
+ const previous=await createDurableOAuthState(env.OAUTH_STATE).createPilotSession('other-business',SUPPORTED_WHATSAPP_MCP_SCOPES);
+ const url='https://pilot.test/oauth/authorize?'+new URLSearchParams({client_id:'https://chatgpt.com/oauth/client.json',redirect_uri:'https://chatgpt.com/connector_platform_oauth_redirect',response_type:'code',resource:'https://pilot.test',scope:'whatsapp.connection.read',code_challenge_method:'S256',code_challenge:'a'.repeat(43),state:'premium-state',workspace_id:'prem-fixture'});
+ const response=await worker.fetch(new Request(url,{headers:{cookie:'__Host-wa_pilot_session='+previous.rawSession}}),effective);
+ expect(response.status).toBe(303);
+ const destination=new URL(response.headers.get('location')!);
+ expect(destination.searchParams.get('client_id')).toBe('whatsapp-customer');
+ expect(destination.searchParams.get('workspace_id')).toBe('prem-fixture');
+ expect(destination.searchParams.get('redirect_uri')).toBe('https://pilot.test/premium/auth/callback');
+ expect(response.headers.get('set-cookie')).toContain('__Host-wa_customer_flow=');
+ const disabled=await worker.fetch(new Request(url,{headers:{cookie:'__Host-wa_pilot_session='+previous.rawSession}}),{...effective,MORNING_CUSTOMER_CLIENT_ID:undefined});
+ expect(disabled.status).toBe(503);
+});
