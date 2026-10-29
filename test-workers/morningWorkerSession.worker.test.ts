@@ -119,3 +119,30 @@ it('routes enrolled workspaces through the customer identity registration withou
  const disabled=await worker.fetch(new Request(url,{headers:{cookie:'__Host-wa_pilot_session='+previous.rawSession}}),{...effective,MORNING_CUSTOMER_CLIENT_ID:undefined});
  expect(disabled.status).toBe(503);
 });
+
+
+it('opens customer setup and resumes one durable invitation without accepting another workspace',async()=>{
+ const origin='https://pilot.test',issuer='https://morning.fixture.test',workspaceId='prem-onboarding',subject=`morning:oidc-${'b'.repeat(32)}`;
+ const prefix=crypto.randomUUID();
+ const namespace={getByName:(name:string)=>env.PILOT_INSTALLATIONS.getByName(prefix+name)};
+ const effective={...env,PILOT_INSTALLATIONS:namespace,MORNING_ISSUER:issuer,MORNING_CUSTOMER_CLIENT_ID:'whatsapp-customer'} as unknown as PersistentWhatsAppWorkerEnv;
+ const state=createDurableOAuthState(env.OAUTH_STATE),rawSession=randomBase64Url(32),now=Math.floor(Date.now()/1000),csrf=randomBase64Url(32);
+ const url=origin+'/premium/whatsapp/setup?workspace_id='+workspaceId;
+ const value={subject,workspaceId,identityAccessToken:'synthetic-owner-token',returnTo:url,csrf,setupIntent:{token:randomBase64Url(32),createdAt:new Date(now*1000).toISOString(),expiresAt:new Date((now+600)*1000).toISOString()}};
+ const sealed=await encryptPilotSecret(JSON.stringify({namespace:JSON.stringify([origin,issuer,effective.MORNING_CUSTOMER_CLIENT_ID,'enrolled-owner']),value}),effective.INSTALLATION_ENCRYPTION_KEY!);
+ await state.morningStore.putMorningLogin('session',await sha256Base64Url(rawSession),JSON.stringify(sealed),now+600,now);
+ const worker=createPersistentWhatsAppWorker({morningRequest:async target=>new URL(target.toString()).pathname==='/.well-known/openid-configuration'?Response.json({issuer,
+ authorization_endpoint:issuer+'/integrations/identity/authorize',token_endpoint:issuer+'/integrations/identity/token',userinfo_endpoint:issuer+'/integrations/identity/userinfo',jwks_uri:issuer+'/integrations/identity/jwks',response_types_supported:['code'],subject_types_supported:['public'],id_token_signing_alg_values_supported:['RS256'],token_endpoint_auth_methods_supported:['none'],code_challenge_methods_supported:['S256']}):Response.json({sub:subject,workspace_id:workspaceId,workspace_role:'owner'})});
+ const headers={cookie:'__Host-wa_customer_session='+rawSession};
+ const unavailable=await worker.fetch(new Request(url,{headers}),{...effective,META_EMBEDDED_SIGNUP_CONFIG_ID:undefined});expect(unavailable.status).toBe(503);
+ const page=await worker.fetch(new Request(url,{headers}),effective);expect(page.status).toBe(200);expect(await page.text()).toContain('Continue to Meta setup');
+ const post=()=>new Request(url,{method:'POST',headers:{...headers,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({csrf})});
+ const first=await worker.fetch(post(),effective),second=await worker.fetch(post(),effective);
+ expect(first.status).toBe(303);expect(second.headers.get('location')).toBe(first.headers.get('location'));
+ const invite=new URL(first.headers.get('location')!).searchParams.get('invite')!;
+ const registry=createPilotInstallationRegistry(namespace as typeof env.PILOT_INSTALLATIONS);
+ expect(await registry.getInvite(invite)).toMatchObject({customerWorkspaceId:workspaceId});
+ const entry=await worker.fetch(new Request(first.headers.get('location')!),effective);expect(entry.status).toBe(303);
+ const signup=await worker.fetch(new Request(entry.headers.get('location')!,{headers:{cookie:entry.headers.get('set-cookie')!.split(';')[0]}}),effective);expect(signup.status).toBe(200);expect(await signup.text()).toContain('Morning Premium');
+ const wrong=await worker.fetch(new Request(url.replace(workspaceId,'prem-other'),{method:'POST',headers:{...headers,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({csrf})}),effective);expect(wrong.status).toBe(409);
+});

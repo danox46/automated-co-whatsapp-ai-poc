@@ -17,7 +17,7 @@ const bindingsSchema = z.array(z.object({ subject: z.string().regex(/^morning:oi
   if (new Set(bindings.map(x => x.subject)).size !== bindings.length || bindings.some(x => new Set(x.installations.map(i => i.tenantId)).size !== x.installations.length)) ctx.addIssue({ code: 'custom', message: 'Duplicate operator or installation' });
 });
 type Flow = { state: string; nonce: string; verifier: string; returnTo: string; workspaceId?: string };
-type Session = { subject: string; identityAccessToken: string; tenantId?: string; returnTo: string; csrf: string; workspaceId?: string };
+type Session = { subject: string; identityAccessToken: string; tenantId?: string; returnTo: string; csrf: string; workspaceId?: string; setupIntent?: {token:string;createdAt:string;expiresAt:string} };
 /** Stable provider namespace derived from verified issuer/workspace, never an operator tenant alias. */
 export async function premiumWorkspaceTenant(issuer: string, workspaceId: string): Promise<string> {
   if (!/^[a-z0-9-]{1,100}$/u.test(workspaceId)) throw new Error('Invalid workspace');
@@ -34,6 +34,7 @@ export class MorningOperatorSessions {
   constructor(private readonly options: { origin: string; issuer: string; clientId: string; encryptionKey: string;
     bindings?: unknown; workspacePolicy?: 'enrolled-owner'; store: MorningLoginStore; installationConnected: (tenantId: string) => Promise<boolean>;
     installationReference?: (tenantId: string) => Promise<string | null>;
+    customerSetup?: {begin:(input:{tenantId:string;workspaceId:string;token:string;createdAt:string;expiresAt:string})=>Promise<string>;status:(tenantId:string)=>Promise<{connected:boolean;name?:string;number?:string;installationRef?:string}>};
     request?: NonNullable<oidc.DiscoveryRequestOptions[typeof oidc.customFetch]>; now?: () => number;
   }) {
     for (const value of [options.origin, options.issuer]) { const url = new URL(value); if (url.protocol !== 'https:' || url.origin !== value) throw new Error('Exact HTTPS sign-in origins required'); }
@@ -83,8 +84,9 @@ export class MorningOperatorSessions {
     return parsed.value as T;
   }
   private binding(subject: string) { return this.bindings.find(x => x.subject === subject); }
+  private isSetup(value:string) {return Boolean(this.options.workspacePolicy && this.options.customerSetup && new URL(value).pathname==='/premium/whatsapp/setup');}
   private validReturn(value: string) {
-    try { const url = new URL(value); return url.origin === this.options.origin && url.pathname === '/oauth/authorize' && !url.hash && value.length <= 16384; } catch { return false; }
+    try { const url = new URL(value); return url.origin === this.options.origin && (url.pathname === '/oauth/authorize'||this.isSetup(value)) && !url.hash && value.length <= 16384; } catch { return false; }
   }
   private requestedReference(value: string): string | Response | undefined {
     const values = new URL(value).searchParams.getAll('installation_ref');
@@ -118,6 +120,7 @@ export class MorningOperatorSessions {
   }
   async handle(request: Request): Promise<Response | null> {
     const url = new URL(request.url); if (url.origin !== this.options.origin) return null;
+    if (this.isSetup(request.url)) return this.setup(request);
     if (url.pathname === this.authPath + '/callback') return request.method === 'GET' ? this.finish(request) : this.problem('Use the sign-in callback link.', 405);
     if (url.pathname === this.authPath + '/select') return this.select(request);
     return null;
@@ -143,14 +146,42 @@ export class MorningOperatorSessions {
       } catch {return this.problem('Morning could not confirm ownership of this workspace. Restart from Premium setup.',403,[clear]);}
       const requested = this.requestedReference(flow.returnTo); if (requested instanceof Response) throw new Error('Invalid installation reference');
       const assigned = await this.connected(subject,flow.workspaceId), choices = requested ? assigned.filter(x => x.installationRef === requested) : assigned;
-      if (!choices.length) return this.problem('No connected WhatsApp business is assigned to this account. Complete the business connection first.', 403, [clear]);
+      const setup=this.isSetup(flow.returnTo);
+      if (!setup && !choices.length) return this.problem('No connected WhatsApp business is assigned to this account. Complete the business connection first.', 403, [clear]);
       const rawSession = randomBase64Url(32), session: Session = { subject, identityAccessToken: tokens.access_token, returnTo: flow.returnTo, csrf: randomBase64Url(32), ...(flow.workspaceId ? {workspaceId:flow.workspaceId} : {}),
         ...(choices.length === 1 ? { tenantId: choices[0].tenantId } : {}) };
       const lifetime = Math.min(3600, Number(tokens.expires_in ?? 3600));
       if (!Number.isFinite(lifetime) || lifetime < 1) throw new Error('Expired identity');
+      if(setup) session.setupIntent={token:randomBase64Url(32),createdAt:new Date(this.now()*1000).toISOString(),expiresAt:new Date((this.now()+Math.floor(lifetime))*1000).toISOString()};
       if (!await this.options.store.putMorningLogin('session', await sha256Base64Url(rawSession), await this.seal(session), this.now() + Math.floor(lifetime), this.now())) throw new Error('Login session unavailable');
-      return this.redirect(session.tenantId ? session.returnTo : this.options.origin + this.authPath + '/select', [clear, this.cookie(this.sessionCookie, rawSession, Math.floor(lifetime))]);
+      return this.redirect(setup||session.tenantId ? session.returnTo : this.options.origin + this.authPath + '/select', [clear, this.cookie(this.sessionCookie, rawSession, Math.floor(lifetime))]);
     } catch { return this.problem('Sign-in did not finish. Restart the connection from the bot setup page.', 400, [clear]); }
+  }
+  private async setup(request:Request):Promise<Response> {
+    if(!['GET','POST'].includes(request.method)) return this.problem('Use the connection form.',405);
+    let workspaceId:string|undefined;
+    try{workspaceId=this.requestedWorkspace(request.url);}catch{return this.problem('Choose one valid workspace from Premium setup.');}
+    const current=await this.session(request);
+    if(!current) return request.method==='GET'?this.start(request):this.problem('Sign in again to continue setup.',401);
+    if(current instanceof Response) return current;
+    if(workspaceId!==current.value.workspaceId || !current.value.setupIntent) return request.method==='GET'?this.start(request):this.problem('Restart setup for this workspace.',409);
+    const tenantId=await premiumWorkspaceTenant(this.options.issuer,workspaceId!),status=await this.options.customerSetup!.status(tenantId);
+    if(request.method==='GET') {
+      const details=status.connected?`<p><strong>${escape(status.name??'WhatsApp business')}</strong>${status.number?'<br>'+escape(status.number):''}</p><p>WhatsApp is connected. Continue in Premium setup to choose the agent that handles conversations.</p>`:
+        `<p>Connect your business number so Morning can receive customer messages and send replies.</p><form method="post" action="${escape(request.url)}"><input type="hidden" name="csrf" value="${escape(current.value.csrf)}"><button type="submit">Continue to Meta setup</button></form>`;
+      return this.page(status.connected?'WhatsApp connected':'Connect WhatsApp',details);
+    }
+    if(request.headers.get('origin')!==this.options.origin || !request.headers.get('content-type')?.startsWith('application/x-www-form-urlencoded'))return this.problem('Restart the connection form.',403);
+    const body=await request.text();if(body.length>2048)return this.problem('Invalid connection form.');
+    const fields=new URLSearchParams(body);
+    if(fields.size!==1 || fields.getAll('csrf').length!==1 || !await secureEqualText(fields.get('csrf')??'',current.value.csrf))return this.problem('Restart the connection form.',403);
+    if(status.connected)return this.redirect(request.url);
+    try {
+      const next=await this.options.customerSetup!.begin({tenantId,workspaceId:workspaceId!,...current.value.setupIntent});
+      const url=new URL(next);
+      if(url.origin!==this.options.origin || url.pathname!=='/pilot/whatsapp/connect' || url.hash || url.searchParams.size!==1 || !url.searchParams.get('invite'))throw new Error('Invalid connection destination');
+      return this.redirect(next);
+    }catch{return this.problem('We could not start the connection. Refresh this page to check its status, then try again. If setup capacity is full, contact Morning support.',409);}
   }
   private async connected(subject: string, workspaceId?:string) {
     const allowed = this.options.workspacePolicy && workspaceId ? [{tenantId:await premiumWorkspaceTenant(this.options.issuer,workspaceId),label:'WhatsApp business'}] : (this.binding(subject)?.installations ?? []);

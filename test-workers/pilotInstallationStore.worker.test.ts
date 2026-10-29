@@ -442,3 +442,14 @@ describe("pilot installation Durable Objects", () => {
     await expect(registry.createInvite(input, now)).rejects.toThrow("Pilot tenant already has a cohort seat");
   });
 });
+
+it('reconciles concurrent customer invitation retries using one saved intent without another seat',async()=>{
+ const registry=createPilotInstallationRegistry(env.PILOT_INSTALLATIONS,'cohort:premium-intent-'+crypto.randomUUID());
+ const now=new Date(),tenantId='premium-'+crypto.randomUUID().replaceAll('-',''),input={tenantId,label:'WhatsApp',cohortRole:'client' as const,expiresAt:new Date(now.getTime()+600000).toISOString(),customerWorkspaceId:'prem-workspace'};
+ const intent={token:'i'.repeat(43),createdAt:now.toISOString()};
+ const tokens=await Promise.all([registry.createInvite(input,now,intent),registry.createInvite(input,now,intent)]);
+ expect(tokens[0]).toBe(intent.token);expect(tokens[1]).toBe(intent.token);
+ expect(await registry.getInvite(intent.token,now)).toMatchObject({tenantId,customerWorkspaceId:'prem-workspace'});
+ await expect(registry.createInvite({...input,label:'different'},now,intent)).rejects.toThrow();
+ expect(await registry.getInvite(intent.token,now)).toMatchObject({label:'WhatsApp'});
+});

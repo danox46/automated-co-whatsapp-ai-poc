@@ -180,13 +180,21 @@ export function createPersistentWhatsAppWorker(
         if (nativeClient?.clientId === env.OAUTH_CLIENT_ID) throw new Error("Native and ChatGPT OAuth registrations must remain distinct");
         let morning: MorningOperatorSessions | undefined;
         const requestedWorkspace=new URL(request.url).searchParams.has('workspace_id');
-        const customerRoute=requestedWorkspace || pathname.startsWith('/premium/auth/');
+        const customerRoute=requestedWorkspace || pathname.startsWith('/premium/auth/') || pathname==='/premium/whatsapp/setup';
         if(customerRoute && (!env.MORNING_CUSTOMER_CLIENT_ID || !env.MORNING_ISSUER || !env.INSTALLATION_ENCRYPTION_KEY || env.MORNING_CUSTOMER_CLIENT_ID===env.MORNING_CLIENT_ID)) {
           return Response.json({error:'customer_connection_unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});
         }
+        if(pathname==='/premium/whatsapp/setup' && !pilotConfigured)return Response.json({error:'customer_connection_unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});
         if(customerRoute) {
           morning = new MorningOperatorSessions({origin:resource,issuer:env.MORNING_ISSUER!,clientId:env.MORNING_CUSTOMER_CLIENT_ID!,
             workspacePolicy:'enrolled-owner',encryptionKey:env.INSTALLATION_ENCRYPTION_KEY!,store:oauthState.morningStore,request:options.morningRequest,
+            ...(pilotConfigured ? {customerSetup:{
+              status:async(tenantId:string)=>{const value=await registry.getInstallation(tenantId);return {connected:value?.status==='connected',...(value?.verifiedName?{name:value.verifiedName}:{}),...(value?.displayPhoneNumber?{number:value.displayPhoneNumber}:{})};},
+              begin:async(input:{tenantId:string;workspaceId:string;token:string;createdAt:string;expiresAt:string})=>{
+                const token=await registry.createInvite({tenantId:input.tenantId,label:'WhatsApp',cohortRole:'client',expiresAt:input.expiresAt,customerWorkspaceId:input.workspaceId},new Date(),{token:input.token,createdAt:input.createdAt});
+                return resource+'/pilot/whatsapp/connect?invite='+encodeURIComponent(token);
+              }
+            }}:{}),
             installationConnected:async tenantId=>(await registry.getInstallation(tenantId))?.status==='connected',
             installationReference:async tenantId=>{
               const installation=await registry.getInstallation(tenantId);

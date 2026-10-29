@@ -24,9 +24,20 @@ before issuing a bot authorization code; revoked ownership or identity sessions
 deny access. Existing bot token and messaging policy contracts remain in force.
 
 The registration is host configuration once per integration, not once per owner.
-There is no customer provider enrollment endpoint yet: the Premium setup flow,
-Meta signup and native profile generation still need to be connected. No
-production environment variable or existing operator mapping was changed.
+Premium now opens `/premium/whatsapp/setup?workspace_id=<id>`. A verified owner
+can begin Meta signup without an operator-created invitation or an existing
+installation. The setup session carries an encrypted, stable invitation intent;
+repeated clicks resume that intent and one durable cohort reservation. GET is
+read-only; POST uses the authenticated owner session, same-origin CSRF form and
+server-derived tenant. Completion returns to the workspace connection status.
+ARP configures the exact provider origin through `PREMIUM_WHATSAPP_ORIGIN`.
+
+No production environment variable or existing operator mapping was changed.
+Native profile generation, selecting its runtime and real provider acceptance
+remain unfinished. The existing closed-pilot cohort limit remains in force;
+commercial enrollment needs its own entitlement/capacity wiring before launch.
+A new login session cannot replace an older pending invitation until it expires;
+explicit recovery across sessions is still needed.
 
 Verification, 2026-10-28:
 - Regression: 4 failing identity tests and a real Worker pilot-cookie fallback
@@ -39,3 +50,16 @@ Verification, 2026-10-28:
   reauthorization, revocation and disconnection. It passed after adding the
   explicit customer callback to the ARP registration contract.
 - This does not prove Google login, Meta onboarding or delivery of a message.
+
+Customer setup verification, 2026-10-28:
+- Two setup tests failed before implementation; concurrency regression failed
+  before idempotent invitation/seat handling; unavailable configuration returned
+  404 before adding its explicit 503 response. Earlier logs retained locally.
+- Final `npm run verify`: typecheck, 285 tests and build passed.
+- Final `npm run test:workers`: 63 tests passed. Real Worker route and SQLite/RPC
+  test opened setup, reused one invitation, rendered the Meta page and rejected
+  another workspace. The expected conflict test emits an exception diagnostic.
+- Meta signup tests use a fake Graph client, including customer completion redirect.
+- Companion ARP evaluator now verifies two empty owners through the real issuer
+  and consumer. Identities, provider state and invitation creation are synthetic.
+- No messages sent, Meta grants created, or production deployment performed.

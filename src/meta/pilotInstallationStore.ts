@@ -11,6 +11,7 @@ export type PilotInviteRecord = {
   createdAt: string;
   expiresAt: string;
   usedAt?: string;
+  customerWorkspaceId?: string;
   reauthorization?: { wabaId: string; phoneNumberId: string; credentialIv: string };
   onboarding?: { flow: "existing_account"; expectedAssets?: { wabaId: string; phoneNumberId: string } };
 };
@@ -49,6 +50,7 @@ type InviteRow = {
   used_at: string | null;
   reauthorization_json: string | null;
   onboarding_json: string | null;
+  customer_workspace_id: string | null;
 };
 type InstallationRow = {
   tenant_id: string;
@@ -143,22 +145,27 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
         validateProviderId(record.onboarding.expectedAssets.phoneNumberId);
       }
     }
+    if(record.customerWorkspaceId && !/^[a-z0-9-]{1,100}$/u.test(record.customerWorkspaceId))throw new Error("Invalid customer workspace");
     const existing = this.ctx.storage.sql.exec<InviteRow>("SELECT * FROM invite LIMIT 1").toArray()[0];
     if (existing && !existing.used_at && existing.expires_at > record.createdAt) {
+      const original=mapInvite(existing);
+      // Compare named fields: callers may serialize property order differently.
+      if(original.tenantId===record.tenantId && original.label===record.label && original.cohortRole===record.cohortRole && original.createdAt===record.createdAt && original.expiresAt===record.expiresAt && original.customerWorkspaceId===record.customerWorkspaceId && JSON.stringify(original.onboarding)===JSON.stringify(record.onboarding) && JSON.stringify(original.reauthorization)===JSON.stringify(record.reauthorization))return;
       throw new Error("Invite token already exists");
     }
     this.ctx.storage.sql.exec("DELETE FROM invite");
     this.ctx.storage.sql.exec("DELETE FROM sessions");
     this.ctx.storage.sql.exec(
-      `INSERT INTO invite (tenant_id, label, cohort_role, created_at, expires_at, used_at, reauthorization_json, onboarding_json)
-       VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
+      `INSERT INTO invite (tenant_id, label, cohort_role, created_at, expires_at, used_at, reauthorization_json, onboarding_json, customer_workspace_id)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       record.tenantId,
       record.label,
       record.cohortRole,
       record.createdAt,
       record.expiresAt,
       record.reauthorization ? JSON.stringify(record.reauthorization) : null,
-      record.onboarding ? JSON.stringify(record.onboarding) : null
+      record.onboarding ? JSON.stringify(record.onboarding) : null,
+      record.customerWorkspaceId ?? null
     );
   }
 
@@ -401,11 +408,8 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
       "DELETE FROM cohort_seats WHERE status = 'invited' AND expires_at <= ?",
       now
     );
-    const existing = this.ctx.storage.sql.exec<CountRow>(
-      "SELECT COUNT(*) AS count FROM cohort_seats WHERE tenant_id = ?",
-      tenantId
-    ).one().count;
-    if (existing > 0) return { ok: false, code: "TENANT_EXISTS" };
+    const existing=this.ctx.storage.sql.exec<CohortSeatRow>("SELECT * FROM cohort_seats WHERE tenant_id = ?",tenantId).toArray()[0];
+    if(existing) return existing.status==='invited'&&existing.invite_hash===inviteHash&&existing.role===role&&existing.expires_at===expiresAt ? {ok:true} : {ok:false,code:'TENANT_EXISTS'};
     const limit = role === "internal" ? 1 : 3;
     const count = this.ctx.storage.sql.exec<CountRow>(
       "SELECT COUNT(*) AS count FROM cohort_seats WHERE role = ?",
@@ -532,6 +536,7 @@ export class WhatsAppPilotInstallationDurableObject extends DurableObject {
     if (!inviteColumns.some(column => column.name === "reauthorization_json")) {
       this.ctx.storage.sql.exec("ALTER TABLE invite ADD COLUMN reauthorization_json TEXT");
     }
+    if (!inviteColumns.some(column => column.name === "customer_workspace_id")) this.ctx.storage.sql.exec("ALTER TABLE invite ADD COLUMN customer_workspace_id TEXT");
     if (!inviteColumns.some(column => column.name === "onboarding_json")) {
       this.ctx.storage.sql.exec("ALTER TABLE invite ADD COLUMN onboarding_json TEXT");
     }
@@ -591,16 +596,18 @@ export function createPilotInstallationRegistry(
       cohortRole: "internal" | "client";
       expiresAt: string;
       onboarding?: PilotInviteRecord["onboarding"];
-    }, now = new Date()): Promise<string> {
-      const rawToken = randomBase64Url(32);
+      customerWorkspaceId?: string;
+    }, now = new Date(), intent?: {token:string;createdAt:string}): Promise<string> {
+      const rawToken = intent?.token ?? randomBase64Url(32);
+      if(!/^[A-Za-z0-9_-]{43}$/u.test(rawToken))throw new Error("Invalid invitation intent");
       const hash = await sha256Base64Url(rawToken);
-      const createdAt = now.toISOString();
+      const createdAt = intent?.createdAt ?? now.toISOString();
       const cohort = namespace.getByName(cohortObjectName);
       const reservation = await cohort.reservePilotSeat(
         input.tenantId,
         input.cohortRole,
         input.expiresAt,
-        createdAt,
+        now.toISOString(),
         hash
       );
       if (!reservation.ok) {
@@ -611,7 +618,7 @@ export function createPilotInstallationRegistry(
       try {
         await namespace.getByName(`invite:${hash}`).createInvite({ ...input, createdAt });
       } catch (error) {
-        await cohort.releasePilotSeat(input.tenantId);
+        if(!intent) await cohort.releasePilotSeat(input.tenantId);
         throw error;
       }
       return rawToken;
@@ -788,6 +795,7 @@ function mapInvite(row: InviteRow): PilotInviteRecord {
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     ...(row.used_at ? { usedAt: row.used_at } : {}),
+    ...(row.customer_workspace_id ? {customerWorkspaceId:row.customer_workspace_id} : {}),
     ...(row.reauthorization_json ? { reauthorization: JSON.parse(row.reauthorization_json) as NonNullable<PilotInviteRecord["reauthorization"]> } : {}),
     ...(row.onboarding_json ? { onboarding: JSON.parse(row.onboarding_json) as NonNullable<PilotInviteRecord["onboarding"]> } : {})
   };

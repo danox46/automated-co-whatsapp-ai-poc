@@ -964,3 +964,14 @@ describe("closed-pilot onboarding", () => {
     expect(oldInvitation?.status).toBe(410);
   });
 });
+
+it('shows concise Premium setup and returns completed customer signup to its authenticated workspace page',async()=>{
+ const f=createFixture(),now=new Date('2026-09-07T12:00:00.000Z');
+ const token=await f.registry.createInvite({tenantId:'premium-fixture',label:'WhatsApp',cohortRole:'client',expiresAt:'2026-09-07T13:00:00.000Z',customerWorkspaceId:'prem-fixture'},now);
+ const cookie='__Host-wa_pilot_invite='+token;
+ const page=(await f.handler.fetch(new Request(origin+'/pilot/whatsapp/connect',{headers:{cookie}})))!;
+ const html=await page.text();expect(html).toContain('Morning Premium');expect(html).not.toContain('tenant-isolated');expect(html).not.toContain('Invited WhatsApp pilot');
+ const state=/"state":"([^"]+)"/u.exec(html)![1];
+ const response=(await f.handler.fetch(new Request(origin+'/pilot/whatsapp/callback',{method:'POST',headers:{cookie,origin,'content-type':'application/json'},body:JSON.stringify({code:'synthetic-code',state,wabaId:'5550002001',phoneNumberId:'5550001001'})})))!;
+ expect(response.status).toBe(200);expect(await response.json()).toMatchObject({status:'connected',nextUrl:'/premium/whatsapp/setup?workspace_id=prem-fixture'});
+});

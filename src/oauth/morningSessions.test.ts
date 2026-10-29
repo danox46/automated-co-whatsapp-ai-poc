@@ -6,7 +6,8 @@ import { signRs256Jwt, sha256Base64Url } from './jwt.js';
 const origin = 'https://whatsapp.fixture.test', issuer = 'https://morning.fixture.test', clientId = 'whatsapp-operator';
 const subject = `morning:oidc-${'a'.repeat(32)}`;
 const cookie = (response: Response, name: string) => response.headers.getSetCookie().find(x => x.startsWith(name + '='))?.split(';')[0] ?? '';
-async function fixture(multiple = false, workspaceId?: string) {
+async function fixture(multiple = false, workspaceId?: string, setup=false) {
+  const setupCalls:unknown[]=[];
   let workspaceClaims: Record<string, unknown> = workspaceId ? {workspace_id:workspaceId,workspace_role:"owner"} : {};
   const rows = new Map<string, { value: string; expires: number }>(); let now = Date.now(), tokenCalls = 0, validUserInfo = true, tokenSubject = subject, badNonce = false;
   const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
@@ -39,9 +40,9 @@ async function fixture(multiple = false, workspaceId?: string) {
   const connected = new Set(multiple ? ['morning-demo', 'client-b'] : ['morning-demo']);
   const sessions = new MorningOperatorSessions({ origin, issuer, clientId, encryptionKey: 'a'.repeat(43),
     bindings: [{ subject, installations: [{ tenantId: 'morning-demo', label: 'Morning demo' }, ...(multiple ? [{ tenantId: 'client-b', label: 'Business B' }] : [])] }],
-    ...(workspaceId ? {workspacePolicy:'enrolled-owner' as const} : {}), store, request, now: () => now, installationConnected: async id => connected.has(id),
+    ...(workspaceId ? {workspacePolicy:'enrolled-owner' as const} : {}), ...(setup?{customerSetup:{begin:async(value:unknown)=>{setupCalls.push(value);return origin+'/pilot/whatsapp/connect?invite=synthetic';},status:async()=>({connected:false})}}:{}), store, request, now: () => now, installationConnected: async id => connected.has(id),
     installationReference: async id => `inst_${(id === 'client-b' ? 'b' : 'a').repeat(32)}` });
-  const returnTo = origin + '/oauth/authorize?client_id=urn%3Amorning%3Awhatsapp-bot&state=native-state' + (workspaceId ? '&workspace_id=' + workspaceId : '');
+  const returnTo = origin + (setup?'/premium/whatsapp/setup?flow=setup':'/oauth/authorize?client_id=urn%3Amorning%3Awhatsapp-bot&state=native-state') + (workspaceId ? '&workspace_id=' + workspaceId : '');
   const begin = async () => {
     const response = await sessions.start(new Request(returnTo)); expect(response.status).toBe(303);
     authorization = new URL(response.headers.get('location')!);
@@ -49,7 +50,7 @@ async function fixture(multiple = false, workspaceId?: string) {
     const callback = new URL(origin + (workspaceId ? '/premium/auth/callback' : '/auth/callback')); callback.searchParams.set('state', authorization.searchParams.get('state')!); callback.searchParams.set('code', 'synthetic-code'); callback.searchParams.set('iss', issuer);
     return { callback, flowCookie, finish: () => sessions.handle(new Request(callback, { headers: { cookie: flowCookie } })) };
   };
-  return { sessions, rows, begin, returnTo, connected, claims:(value:Record<string,unknown>)=>{workspaceClaims=value;}, authorization:()=>authorization, tokenCalls: () => tokenCalls,
+  return { sessions, rows, begin, returnTo, connected, setupCalls, claims:(value:Record<string,unknown>)=>{workspaceClaims=value;}, authorization:()=>authorization, tokenCalls: () => tokenCalls,
     revoke: () => { validUserInfo = false; }, unknownSubject: () => { tokenSubject = `morning:oidc-${'b'.repeat(32)}`; }, corruptNonce: () => { badNonce = true; }, advance: (ms: number) => { now += ms; } };
 }
 describe('Morning operator to WhatsApp installation sign-in', () => {
@@ -158,4 +159,25 @@ it('keeps two enrolled workspaces of one owner separate through sign-in and fres
   a.claims({workspace_id:'prem-a',workspace_role:'member'});
   expect((await a.sessions.resolve(new Request(a.returnTo,{headers:{cookie:sessionCookie}})) as Response).status).toBe(401);
   expect(JSON.stringify([...a.rows.values()])).not.toContain('synthetic-morning-identity-access');
+});
+
+describe('Customer-owned WhatsApp setup',()=>{
+ it('permits verified owners to prepare a new connection and keeps the invitation intent stable',async()=>{
+  const f=await fixture(false,'prem-setup',true),flow=await f.begin(),finished=(await flow.finish())!;
+  expect(finished.status).toBe(303); expect(finished.headers.get('location')).toBe(f.returnTo);
+  const sessionCookie=cookie(finished,'__Host-wa_customer_session');
+  const page=(await f.sessions.handle(new Request(f.returnTo,{headers:{cookie:sessionCookie}})))!;
+  expect(page.status).toBe(200);const html=await page.text();expect(html).toContain('Connect WhatsApp');
+  const csrf=/name="csrf" value="([^"]+)"/u.exec(html)![1];
+  const post=(token=csrf,requestOrigin=origin)=>f.sessions.handle(new Request(f.returnTo,{method:'POST',headers:{cookie:sessionCookie,origin:requestOrigin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({csrf:token})}));
+  expect((await post('wrong'))?.status).toBe(403);expect((await post(csrf,'https://foreign.test'))?.status).toBe(403);expect(f.setupCalls).toHaveLength(0);
+  expect((await post())?.status).toBe(303);expect((await post())?.status).toBe(303);
+  expect(f.setupCalls[0]).toEqual(f.setupCalls[1]);
+  expect(f.setupCalls[0]).toMatchObject({workspaceId:'prem-setup',tenantId:await premiumWorkspaceTenant(issuer,'prem-setup')});
+  f.revoke();expect((await post())?.status).toBe(401);expect(f.setupCalls).toHaveLength(2);
+ });
+ it('starts sign-in from the setup route without a customer cookie and never creates an invitation on GET',async()=>{
+  const f=await fixture(false,'prem-setup',true);
+  const response=await f.sessions.handle(new Request(f.returnTo));expect(response?.status).toBe(303);expect(f.setupCalls).toHaveLength(0);
+ });
 });
