@@ -36,8 +36,12 @@ No production environment variable or existing operator mapping was changed.
 Native profile generation, selecting its runtime and real provider acceptance
 remain unfinished. The existing closed-pilot cohort limit remains in force;
 commercial enrollment needs its own entitlement/capacity wiring before launch.
-A new login session cannot replace an older pending invitation until it expires;
-explicit recovery across sessions is still needed.
+Setup now claims an encrypted invitation intent in the durable identity store,
+scoped to issuer/client namespace and workspace. Fresh sign-ins resume that
+intent; concurrent requests share it without extending its original expiry.
+Ownership is revalidated before each attempt. An older invitation created before
+this change can be adopted by its original session; a new session cannot recover
+its raw token from the invitation hash and must wait for that legacy invite to expire.
 
 Verification, 2026-10-28:
 - Regression: 4 failing identity tests and a real Worker pilot-cookie fallback
@@ -76,3 +80,12 @@ export. An unconnected workspace returns 409; unavailable native setup returns
 The native branch consumes this file directly through `meta:connect`; it derives
 its own protected OAuth path under the current user's installation state. Full
 business runtime preparation/agent selection remains separate from this grant.
+
+Cross-session setup recovery verification, 2026-10-29 UTC:
+- Real Worker regression reproduced HTTP 409 on a fresh login before the repair.
+- `npm run verify`: typecheck, 286 unit tests and build passed.
+- `npm run test:workers`: 64 tests passed, including concurrent setup claims,
+  separate workspace keys, original expiry, invalid lifetime rejection and a fresh
+  browser session resuming the original registry invitation.
+- Local failure and passing logs retained as `artifacts-premium-setup-resume-*`.
+- Development only; real Meta signup and message acceptance remain outstanding.

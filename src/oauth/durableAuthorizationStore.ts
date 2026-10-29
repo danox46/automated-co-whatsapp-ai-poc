@@ -43,6 +43,20 @@ export class WhatsAppOAuthStateDurableObject extends DurableObject {
     ctx.blockConcurrencyWhile(async () => this.migrate());
   }
 
+  /** One encrypted setup intent per workspace, retained across browser sessions. */
+  async claimMorningSetup(hash: string, encrypted: string, expiresAt: number, nowSeconds: number): Promise<string | null> {
+    validateHash(hash);
+    if(!encrypted.length||encrypted.length>65536||!Number.isInteger(nowSeconds)||!Number.isInteger(expiresAt)||expiresAt<=nowSeconds||expiresAt>nowSeconds+3600)return null;
+    // Synchronous SQL in this owning object makes concurrent first claims atomic.
+    this.ctx.storage.sql.exec('DELETE FROM morning_login_records WHERE expires_at <= ?',nowSeconds);
+    const existing=this.ctx.storage.sql.exec<{encrypted_json:string}>("SELECT encrypted_json FROM morning_login_records WHERE kind='setup' AND record_hash=?",hash).toArray()[0];
+    if(existing)return existing.encrypted_json;
+    const count=this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM morning_login_records WHERE kind='setup'").one().n;
+    if(count>=1000)return null;
+    this.ctx.storage.sql.exec("INSERT INTO morning_login_records (kind,record_hash,encrypted_json,expires_at) VALUES ('setup',?,?,?)",hash,encrypted,expiresAt);
+    return encrypted;
+  }
+
   async putMorningLogin(kind: MorningLoginRecordKind, hash: string, encrypted: string, expiresAt: number, nowSeconds: number): Promise<boolean> {
     validateHash(hash);
     if (!['flow', 'session'].includes(kind) || encrypted.length > 65536 || !Number.isInteger(nowSeconds) || !Number.isInteger(expiresAt)) return false;

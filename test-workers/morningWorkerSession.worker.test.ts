@@ -140,6 +140,12 @@ it('opens customer setup and resumes one durable invitation without accepting an
  const post=()=>new Request(url,{method:'POST',headers:{...headers,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({csrf})});
  const first=await worker.fetch(post(),effective),second=await worker.fetch(post(),effective);
  expect(first.status).toBe(303);expect(second.headers.get('location')).toBe(first.headers.get('location'));
+ // A fresh authenticated browser session must resume this workspace's invitation.
+ const newSession=randomBase64Url(32),freshCsrf=randomBase64Url(32),freshValue={...value,csrf:freshCsrf,setupIntent:{...value.setupIntent,token:randomBase64Url(32)}};
+ await state.morningStore.putMorningLogin('session',await sha256Base64Url(newSession),JSON.stringify(await encryptPilotSecret(JSON.stringify({namespace:JSON.stringify([origin,issuer,effective.MORNING_CUSTOMER_CLIENT_ID,'enrolled-owner']),value:freshValue}),effective.INSTALLATION_ENCRYPTION_KEY!)),now+600,now);
+ const freshRequest=()=>new Request(url,{method:'POST',headers:{cookie:'__Host-wa_customer_session='+newSession,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({csrf:freshCsrf})});
+ const recovered=await worker.fetch(freshRequest(),effective);expect(recovered.status).toBe(303);expect(recovered.headers.get('location')).toBe(first.headers.get('location'));
+ const concurrent=await Promise.all([worker.fetch(post(),effective),worker.fetch(freshRequest(),effective)]);expect(concurrent.map(r=>r.headers.get('location'))).toEqual([first.headers.get('location'),first.headers.get('location')]);
  const invite=new URL(first.headers.get('location')!).searchParams.get('invite')!;
  const registry=createPilotInstallationRegistry(namespace as typeof env.PILOT_INSTALLATIONS);
  expect(await registry.getInvite(invite)).toMatchObject({customerWorkspaceId:workspaceId});

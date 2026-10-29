@@ -3,6 +3,24 @@ import { describe, expect, it } from 'vitest';
 import { sha256Base64Url } from '../src/meta/pilotCrypto.js';
 
 describe('Morning sign-in durable state', () => {
+  it('retains one workspace setup across concurrent claims and fresh stubs until its original expiry', async () => {
+    const name = 'morning-setup-' + crypto.randomUUID(), stub = env.OAUTH_STATE.getByName(name);
+    const hash = await sha256Base64Url('workspace-one'), other = await sha256Base64Url('workspace-two');
+    const now = Math.floor(Date.now() / 1000);
+    const claims = await Promise.all([
+      stub.claimMorningSetup(hash, 'encrypted-first', now + 300, now),
+      stub.claimMorningSetup(hash, 'encrypted-second', now + 600, now)
+    ]);
+    expect(claims[0]).toBe('encrypted-first');
+    expect(claims[1]).toBe(claims[0]);
+    const resumed = env.OAUTH_STATE.getByName(name);
+    expect(await resumed.claimMorningSetup(other, 'encrypted-other', now + 600, now)).toBe('encrypted-other');
+    expect(await resumed.claimMorningSetup(hash, 'must-not-extend', now + 700, now + 299)).toBe('encrypted-first');
+    expect(await resumed.claimMorningSetup(hash, 'too-long', now + 4000, now + 299)).toBeNull();
+    expect(await resumed.claimMorningSetup(hash, 'expired', now + 299, now + 299)).toBeNull();
+    expect(await resumed.claimMorningSetup(hash, 'renewed-after-expiry', now + 900, now + 300)).toBe('renewed-after-expiry');
+    expect(await resumed.claimMorningSetup(other, 'unchanged-other', now + 900, now + 300)).toBe('encrypted-other');
+  });
   it('claims one callback once across concurrent readers and preserves session expiry on business selection', async () => {
     const stub = env.OAUTH_STATE.getByName('morning-test-' + crypto.randomUUID());
     const hash = await sha256Base64Url('synthetic-browser-cookie'), now = Math.floor(Date.now() / 1000);

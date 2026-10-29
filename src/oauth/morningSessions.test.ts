@@ -13,6 +13,7 @@ async function fixture(multiple = false, workspaceId?: string, setup=false) {
   const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
   const privateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey), publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
   const store: MorningLoginStore = {
+    claimMorningSetup:async(hash,value,expires,at)=>{const key='setup'+hash,prior=rows.get(key);if(prior&&prior.expires>at)return prior.value;rows.set(key,{value,expires});return value;},
     putMorningLogin: async (kind, hash, value, expires) => { const key = kind + hash; rows.set(key, { value, expires: expires || rows.get(key)!.expires }); return true; },
     getMorningLogin: async (kind, hash, at) => { const row = rows.get(kind + hash); return row && row.expires > at ? row.value : null; },
     consumeMorningLoginFlow: async (hash, at) => { const key = 'flow' + hash, row = rows.get(key); if (!row || row.expires <= at) return null; rows.delete(key); return row.value; },

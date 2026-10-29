@@ -6,6 +6,7 @@ import { SUPPORTED_WHATSAPP_MCP_SCOPES } from '../mcp/auth.js';
 
 export type MorningLoginRecordKind = 'flow' | 'session';
 export interface MorningLoginStore {
+  claimMorningSetup(hash: string, encrypted: string, expiresAt: number, nowSeconds: number): Promise<string | null>;
   putMorningLogin(kind: MorningLoginRecordKind, hash: string, encrypted: string, expiresAt: number, nowSeconds: number): Promise<boolean>;
   getMorningLogin(kind: MorningLoginRecordKind, hash: string, nowSeconds: number): Promise<string | null>;
   consumeMorningLoginFlow(hash: string, nowSeconds: number): Promise<string | null>;
@@ -188,7 +189,13 @@ export class MorningOperatorSessions {
     if(fields.size!==1 || fields.getAll('csrf').length!==1 || !await secureEqualText(fields.get('csrf')??'',current.value.csrf))return this.problem('Restart the connection form.',403);
     if(status.connected)return this.redirect(request.url);
     try {
-      const next=await this.options.customerSetup!.begin({tenantId,workspaceId:workspaceId!,...current.value.setupIntent});
+      const candidate={tenantId,workspaceId:workspaceId!,...current.value.setupIntent},now=this.now();
+      const setupKey=await sha256Base64Url(JSON.stringify([this.namespace(),workspaceId,'whatsapp-setup']));
+      const sealed=await this.options.store.claimMorningSetup(setupKey,await this.seal(candidate),Math.floor(Date.parse(candidate.expiresAt)/1000),now);
+      if(!sealed)throw new Error('Setup unavailable');
+      const intent=z.object({tenantId:z.string(),workspaceId:z.string(),token:z.string().regex(/^[A-Za-z0-9_-]{43}$/u),createdAt:z.iso.datetime(),expiresAt:z.iso.datetime()}).strict().parse(await this.open(sealed));
+      if(intent.tenantId!==tenantId||intent.workspaceId!==workspaceId||Date.parse(intent.expiresAt)<=now*1000||intent.createdAt>=intent.expiresAt)throw new Error('Invalid setup binding');
+      const next=await this.options.customerSetup!.begin(intent);
       const url=new URL(next);
       if(url.origin!==this.options.origin || url.pathname!=='/pilot/whatsapp/connect' || url.hash || url.searchParams.size!==1 || !url.searchParams.get('invite'))throw new Error('Invalid connection destination');
       return this.redirect(next);
