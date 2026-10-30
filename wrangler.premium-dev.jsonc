@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "morning-whatsapp-premium-dev",
+  "main": "src/mcp/persistentWorker.ts",
+  "account_id": "cefc0d7e8614730469a2bec57650eb5e",
+  "compatibility_date": "2026-09-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{"pattern": "premium-whatsapp-dev.morningarp.com", "custom_domain": true}],
+  "vars": {
+    "PUBLIC_ORIGIN": "https://premium-whatsapp-dev.morningarp.com",
+    "MORNING_ISSUER": "https://premium-dev.morningarp.com",
+    "MORNING_CUSTOMER_CLIENT_ID": "whatsapp-customer",
+    "BOT_OAUTH_REDIRECT_URI": "http://127.0.0.1:9468/callback",
+    "META_GRAPH_API_VERSION": "v25.0",
+    "META_EMBEDDED_SIGNUP_SESSION_VERSION": "4",
+    "OAUTH_SIGNING_KEY_ID": "premium-dev-2026-10-30",
+    "OAUTH_CLIENT_ID": "https://chatgpt.com/oauth/client.json",
+    "OAUTH_REDIRECT_URI": "https://chatgpt.com/connector_platform_oauth_redirect",
+    "CONVERSATION_MESSAGE_RETENTION_DAYS": "90",
+    "CONVERSATION_INACTIVE_RETENTION_DAYS": "365",
+    "CONVERSATION_PENDING_STATUS_RETENTION_DAYS": "7",
+    "CONVERSATION_RETENTION_INTERVAL_HOURS": "24"
+  },
+  "durable_objects": {"bindings": [
+    {"name": "CONVERSATIONS", "class_name": "WhatsAppConversationDurableObject"},
+    {"name": "PILOT_INSTALLATIONS", "class_name": "WhatsAppPilotInstallationDurableObject"},
+    {"name": "OAUTH_STATE", "class_name": "WhatsAppOAuthStateDurableObject"}
+  ]},
+  "migrations": [
+    {"tag": "conversation-history-v1", "new_sqlite_classes": ["WhatsAppConversationDurableObject"]},
+    {"tag": "pilot-installations-v1", "new_sqlite_classes": ["WhatsAppPilotInstallationDurableObject"]},
+    {"tag": "oauth-state-v1", "new_sqlite_classes": ["WhatsAppOAuthStateDurableObject"]}
+  ],
+  "observability": {"enabled": false}
+}
