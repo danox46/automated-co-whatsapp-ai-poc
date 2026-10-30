@@ -240,6 +240,17 @@ async function signupBrowserFixture(callbackFetch: typeof fetch, reauthorization
   };
 }
 
+it.each(['FINISH_GRANT_ONLY_API_ACCESS','FINISH'])('accepts phone-bound reconnect completion %s once', async event => {
+  const send = vi.fn(async () => Response.json({ok:true}));
+  const page = await signupBrowserFixture(send, true);
+  page.click(); page.login(); page.finish(event);
+  await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(page.status.textContent).toContain('Authorization renewed'));
+  page.finish(event);page.cancel();
+  expect(send).toHaveBeenCalledOnce();
+  expect(page.status.textContent).toContain('Authorization renewed');
+});
+
 it.each([[false,false],[true,false],[false,true]])('keeps connection entry concise without exposing invitation labels (%s, %s)', async (renewal, existing) => {
   const page = await signupBrowserFixture(vi.fn(), renewal, existing);
   expect(page.html).toContain(`<h1>${renewal ? 'Reconnect' : 'Connect'} WhatsApp</h1>`);
@@ -459,10 +470,10 @@ describe("closed-pilot onboarding", () => {
     expect(f.fixture.graph.unsubscribeApp).not.toHaveBeenCalled();
   });
 
-  it("launches the documented app-only flow and requires its matching completion event", async () => {
+  it("launches the documented app-only flow and still requires a phone-bound completion", async () => {
     const send = vi.fn(async () => Response.json({ ok: true }));
     const browser = await signupBrowserFixture(send, true);
-    browser.click(); browser.login(); browser.finish("FINISH");
+    browser.click(); browser.login(); browser.finish("FINISH", { phone_number_id: undefined });
     expect(send).not.toHaveBeenCalled();
     expect(browser.loginOptions).toHaveBeenCalledWith(expect.objectContaining({ extras: {
       version: "v3", features: [{ name: "app_only_install" }], sessionInfoVersion: "3"
