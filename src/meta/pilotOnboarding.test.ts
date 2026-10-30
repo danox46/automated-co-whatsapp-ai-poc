@@ -228,7 +228,7 @@ async function signupBrowserFixture(callbackFetch: typeof fetch, reauthorization
   window.fbAsyncInit();
   const click = button.addEventListener.mock.calls[0]?.[1] as () => void;
   return {
-    button, status, click, loginOptions,
+    html, button, status, click, loginOptions,
     login: () => completeLogin({ authResponse: { code: "A2345678901234567890" } }),
     finish: (event = reauthorization || existingAccount ? "FINISH_GRANT_ONLY_API_ACCESS" : "FINISH", assets: Record<string, unknown> = {}) => receive({ origin: "https://www.facebook.com", data: {
       type: "WA_EMBEDDED_SIGNUP", event,
@@ -239,6 +239,18 @@ async function signupBrowserFixture(callbackFetch: typeof fetch, reauthorization
     } })
   };
 }
+
+it.each([[false,false],[true,false],[false,true]])('keeps connection entry concise without exposing invitation labels (%s, %s)', async (renewal, existing) => {
+  const page = await signupBrowserFixture(vi.fn(), renewal, existing);
+  expect(page.html).toContain(`<h1>${renewal ? 'Reconnect' : 'Connect'} WhatsApp</h1>`);
+  expect(page.html).not.toContain('Morning review');
+  expect(page.html).not.toContain('tenant-isolated');
+  expect(page.html).not.toContain('idempotency');
+  expect(page.html).toContain('<summary>About this connection</summary>');
+  expect(page.html).toContain('>Privacy</a>');
+  expect(page.html).toContain('>Terms</a>');
+  expect(page.html.includes('Its templates and billing are separate')).toBe(existing && !renewal);
+});
 
 async function submitFixtureSignup(fixture: ReturnType<typeof createFixture>, tenantId: string) {
   const invite = await (await fixture.handler.fetch(adminRequest('/admin/pilot/invitations', 'POST',
@@ -777,7 +789,8 @@ describe("closed-pilot onboarding", () => {
     const html = await page?.text() as string;
     expect(page?.status).toBe(200);
     expect(page?.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
-    expect(html).toContain("Pilot One");
+    expect(html).toContain("<h1>Connect WhatsApp</h1>");
+    expect(html).not.toContain("Pilot One");
     expect(html).not.toContain("private-app-secret");
     expect(html).not.toContain(new URL(invitation.invitationUrl).searchParams.get("invite") as string);
     const configMatch = /const cfg=(\{.*?\});let/u.exec(html);

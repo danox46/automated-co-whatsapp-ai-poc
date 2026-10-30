@@ -219,7 +219,8 @@ describe("pilot installation Durable Objects", () => {
     const html = await page.text();
     expect(page.status).toBe(200);
     expect(page.headers.get("content-security-policy")).toContain("https://connect.facebook.net");
-    expect(html).toContain("First pilot client");
+    expect(html).toContain("<h1>Connect WhatsApp</h1>");
+    expect(html).not.toContain("First pilot client");
     expect(html).not.toContain(new URL(invitation.invitationUrl).searchParams.get("invite") as string);
 
     const health = await exports.default.fetch(new Request("https://pilot.test/health"));
