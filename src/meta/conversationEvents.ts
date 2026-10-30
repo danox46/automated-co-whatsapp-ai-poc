@@ -15,6 +15,7 @@ export type MetaConversationPersistence = {
   conversationRefSecret: string;
   writer: WhatsAppConversationWriter;
   captureAttachment?: (attachment: InternalStoredAttachment & { tenantId: string }) => Promise<unknown>;
+  afterInbound?: (tenantId:string,conversationRef:string,occurredAt:string)=>Promise<void>;
 };
 
 export async function persistMetaConversationEvents(
@@ -70,6 +71,7 @@ export async function persistMetaConversationEvents(
         status: "received"
       };
       await persistence.writer.ingestMessage(normalized);
+      if(persistence.afterInbound)await persistence.afterInbound(persistence.tenantId,conversationRef,occurredAt);
       if (attachment && persistence.captureAttachment) {
         await persistence.captureAttachment({
           tenantId: persistence.tenantId,

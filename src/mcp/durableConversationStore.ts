@@ -1,4 +1,7 @@
 import { DurableObject, type DurableObjectState } from "cloudflare:workers";
+import {updateCustomerRuntime,runtimeIsOffline,type CustomerRuntimeReport,type StoredCustomerRuntime} from '../meta/customerRuntime.js';
+import {createHostedCustomerRuntime} from '../meta/customerRuntimeHost.js';
+import type {PersistentWhatsAppWorkerEnv} from './persistentWorker.js';
 import { flowFormSchema, flowKindSchema, flowSubmissionSchema, invalidFlowSubmission, type InternalFlowLaunch, type StoredFlowSubmission } from "../meta/flowResponses.js";
 import {
   boundedLimit,
@@ -103,6 +106,10 @@ export type ConversationDeletionResult = {
 };
 
 export type DurableConversationObjectStub = {
+  reportCustomerRuntime(report:CustomerRuntimeReport,subject:string,installationBinding:string,now:number):Promise<StoredCustomerRuntime>;
+  getCustomerRuntime():Promise<StoredCustomerRuntime|null>;
+  queueCustomerOffline(conversationRef:string,occurredAt:string,now:number):Promise<void>;
+  completeCustomerOffline(conversationRef:string,occurredAt:string):Promise<void>;
   initializeTenant(tenantId: string): Promise<void>;
   registerConversation(input: {
     conversationRef: string;
@@ -170,6 +177,7 @@ export type OutboundDispatchReservation = {
   now: string;
   notAfter?: string;
   expectedProviderAccountRef?: string;
+  offlineRuntime?:{generation:string;revision:number;inboundAt:string};
   template?: { name: string; category: string; purpose: string; languageCode: string };
 };
 
@@ -222,8 +230,10 @@ export type DurableConversationNamespace = {
 };
 
 export class WhatsAppConversationDurableObject extends DurableObject {
+  private readonly runtimeEnv:unknown;
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
+    this.runtimeEnv=env;
     ctx.blockConcurrencyWhile(async () => this.migrate());
   }
 
@@ -238,6 +248,57 @@ export class WhatsAppConversationDurableObject extends DurableObject {
         "INSERT INTO metadata (key, value) VALUES ('tenant_id', ?)",
         tenantId
       );
+    }
+  }
+
+  async getCustomerRuntime():Promise<StoredCustomerRuntime|null>{
+    return this.readCustomerRuntime();
+  }
+  private readCustomerRuntime():StoredCustomerRuntime|null{
+    this.assertInitialized();const row=this.ctx.storage.sql.exec<MetadataRow>("SELECT value FROM metadata WHERE key='customer_runtime'").toArray()[0];
+    return row?JSON.parse(row.value) as StoredCustomerRuntime:null;
+  }
+  async reportCustomerRuntime(report:CustomerRuntimeReport,subject:string,installationBinding:string,now:number):Promise<StoredCustomerRuntime>{
+    this.assertInitialized();if(!subject||subject.length>200||!installationBinding||installationBinding.length>200||!Number.isSafeInteger(now)||now<0)throw Error('INVALID_RUNTIME_REPORT');
+    const previous=this.readCustomerRuntime(),value=updateCustomerRuntime(previous,report,subject,installationBinding,now);
+    this.ctx.storage.sql.exec("INSERT INTO metadata(key,value) VALUES('customer_runtime',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value",JSON.stringify(value));
+    if(!value.enabled||!value.offlineMessage.trim()||previous&&previous.installationBinding!==value.installationBinding){
+      this.ctx.storage.sql.exec('DELETE FROM customer_offline_pending');await this.scheduleRuntimeAlarm();
+    }
+    return value;
+  }
+  async queueCustomerOffline(conversationRef:string,occurredAt:string,now:number):Promise<void>{
+    this.assertInitialized();parseCanonicalIso(occurredAt,'inbound time');
+    const runtime=this.readCustomerRuntime();if(!runtime?.enabled||!runtime.offlineMessage.trim())return;
+    const due=Math.max(now+1000,runtime.lastSeenAt+90001);
+    this.ctx.storage.sql.exec(`INSERT INTO customer_offline_pending(conversation_ref,occurred_at,due_at) VALUES(?,?,?) ON CONFLICT(conversation_ref) DO UPDATE SET occurred_at=MAX(occurred_at,excluded.occurred_at),due_at=MIN(due_at,excluded.due_at)`,conversationRef,occurredAt,due);
+    await this.scheduleRuntimeAlarm();
+  }
+  async completeCustomerOffline(conversationRef:string,occurredAt:string):Promise<void>{
+    this.ctx.storage.sql.exec('DELETE FROM customer_offline_pending WHERE conversation_ref=? AND occurred_at<=?',conversationRef,occurredAt);
+    await this.scheduleRuntimeAlarm();
+  }
+  private async scheduleRuntimeAlarm(){
+    const pending=this.ctx.storage.sql.exec<{next:number|null}>('SELECT MIN(due_at) AS next FROM customer_offline_pending').one().next;
+    const retention=this.ctx.storage.sql.exec<MetadataRow>("SELECT value FROM metadata WHERE key='retention_next_run_at'").toArray()[0];
+    const dates=[pending,retention?Number(retention.value):null].filter((value):value is number=>value!==null&&Number.isFinite(value));
+    if(dates.length)await this.ctx.storage.setAlarm(Math.min(...dates));
+    else await this.ctx.storage.deleteAlarm();
+  }
+  private async processRuntimePending(now:number){
+    const pending=this.ctx.storage.sql.exec<{conversation_ref:string;occurred_at:string}>('SELECT conversation_ref,occurred_at FROM customer_offline_pending WHERE due_at<=? ORDER BY due_at LIMIT 25',now).toArray();if(!pending.length)return;
+    const tenantId=this.ctx.storage.sql.exec<MetadataRow>("SELECT value FROM metadata WHERE key='tenant_id'").one().value;
+    const nativeEnv=this.runtimeEnv as PersistentWhatsAppWorkerEnv;
+    const responder=createHostedCustomerRuntime({...nativeEnv,CONVERSATIONS:{getByName:id=>{if(id!==tenantId)throw Error('RUNTIME_TENANT_MISMATCH');return this;}}});
+    for(const item of pending){
+      try{if(await responder.deliverPending(tenantId,item.conversation_ref,item.occurred_at)==='waiting'){
+        const latest=this.readCustomerRuntime();this.ctx.storage.sql.exec('UPDATE customer_offline_pending SET due_at=? WHERE conversation_ref=?',Math.max(now+1000,(latest?.lastSeenAt??now)+90001),item.conversation_ref);continue;
+      }}catch{
+        // A provider invocation may have happened. Its durable reservation remains
+        // authoritative; retain a diagnostic, never turn this into a replay loop.
+        this.ctx.storage.sql.exec("INSERT INTO metadata(key,value) VALUES('customer_runtime_last_issue',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",JSON.stringify({code:'offline_reply_unconfirmed',at:now}));
+      }
+      await this.completeCustomerOffline(item.conversation_ref,item.occurred_at);
     }
   }
 
@@ -259,16 +320,15 @@ export class WhatsAppConversationDurableObject extends DurableObject {
         value
       );
     }
-    const scheduled = await this.ctx.storage.getAlarm();
-    if (scheduled === null) {
-      await this.ctx.storage.setAlarm(nowMs + policy.pruneIntervalHours * 60 * 60 * 1000);
-    }
+    this.ctx.storage.sql.exec("INSERT OR IGNORE INTO metadata(key,value) VALUES('retention_next_run_at',?)",String(nowMs+policy.pruneIntervalHours*3600000));
+    await this.scheduleRuntimeAlarm();
   }
 
   async alarm(): Promise<void> {
     const policy = this.readRetentionPolicy();
-    if (!policy) return;
-    await this.runRetention(new Date().toISOString());
+    const now=Date.now(),next=this.ctx.storage.sql.exec<MetadataRow>("SELECT value FROM metadata WHERE key='retention_next_run_at'").toArray()[0];
+    if(policy&&(!next||Number(next.value)<=now))await this.runRetention(new Date(now).toISOString());
+    await this.processRuntimePending(now);await this.scheduleRuntimeAlarm();
   }
 
   async runRetention(now: string): Promise<ConversationRetentionResult> {
@@ -340,7 +400,8 @@ export class WhatsAppConversationDurableObject extends DurableObject {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       now
     );
-    await this.ctx.storage.setAlarm(Date.parse(nextRunAt));
+    this.ctx.storage.sql.exec("INSERT INTO metadata(key,value) VALUES('retention_next_run_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",String(Date.parse(nextRunAt)));
+    await this.scheduleRuntimeAlarm();
     return {
       ranAt: now,
       messageCutoff,
@@ -818,6 +879,9 @@ export class WhatsAppConversationDurableObject extends DurableObject {
     this.assertInitialized();
     const existing = this.readOutboundDispatchResult(input);
     if (existing) return existing;
+    if(input.offlineRuntime){const value=this.readCustomerRuntime();
+      if(!runtimeIsOffline(value,Date.parse(input.now))||value.generation!==input.offlineRuntime.generation||value.revision!==input.offlineRuntime.revision)return {status:'blocked',reason:'state_changed'};
+    }
     const conversation = this.ctx.storage.sql.exec<InternalConversationRow>(
       "SELECT * FROM conversations WHERE conversation_ref = ?",
       input.conversationRef
@@ -827,6 +891,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       return { status: "blocked", reason: "state_changed" };
     }
     if (conversation.recipient_opted_out === 1) return { status: "blocked", reason: "recipient_opted_out" };
+    if(input.offlineRuntime&&conversation.last_outbound_at&&Date.parse(conversation.last_outbound_at)>=Date.parse(input.offlineRuntime.inboundAt))return {status:'blocked',reason:'state_changed'};
     if (conversation.automation_paused === 1) return { status: "blocked", reason: "automation_paused" };
     if (input.kind === "approved_template") {
       const template = input.template;
@@ -1345,6 +1410,7 @@ export class WhatsAppConversationDurableObject extends DurableObject {
       ALTER TABLE outbound_dispatches ADD COLUMN provider_rejected_at TEXT;
       INSERT INTO _sql_schema_migrations (id) VALUES (7);
     `);
+    if(currentVersion<8)this.ctx.storage.sql.exec(`CREATE TABLE customer_offline_pending(conversation_ref TEXT PRIMARY KEY,occurred_at TEXT NOT NULL,due_at INTEGER NOT NULL,FOREIGN KEY(conversation_ref) REFERENCES conversations(conversation_ref) ON DELETE CASCADE);CREATE INDEX idx_customer_offline_due ON customer_offline_pending(due_at);INSERT INTO _sql_schema_migrations(id) VALUES(8);`);
   }
 
   private assertInitialized(): void {

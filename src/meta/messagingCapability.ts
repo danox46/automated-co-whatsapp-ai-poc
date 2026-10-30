@@ -103,6 +103,7 @@ export function createMetaMessagingCapability(input: {
         requestFingerprint: fingerprint,
         expectedPolicyRevision: dispatch.expectedPolicyRevision,
         expectedProviderAccountRef: installation.phoneNumberId,
+        ...(dispatch.offlineRuntime?{offlineRuntime:dispatch.offlineRuntime}:{}),
         now: now().toISOString(),
         notAfter: dispatch.notAfter
       });

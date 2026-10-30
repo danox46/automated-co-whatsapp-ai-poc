@@ -103,7 +103,8 @@ describeWithSqlite("authoritative outbound dispatch regressions", () => {
     f.db.exec(`ALTER TABLE outbound_dispatches DROP COLUMN provider_rejection_code;
       ALTER TABLE outbound_dispatches DROP COLUMN provider_rejection_status;
       ALTER TABLE outbound_dispatches DROP COLUMN provider_rejected_at;
-      DELETE FROM _sql_schema_migrations WHERE id = 7;`);
+      DROP TABLE customer_offline_pending;
+      DELETE FROM _sql_schema_migrations WHERE id >= 7;`);
     const restored = f.reconstructStore();
     await restored.initializeTenant("tenant-test");
     expect(await restored.listOutboundDispatchReceipts("conv-test")).toEqual([

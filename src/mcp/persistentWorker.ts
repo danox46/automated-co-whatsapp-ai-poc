@@ -1,4 +1,5 @@
 import { persistMetaAccountUpdates } from "../meta/accountUpdates.js";
+import {createCustomerRuntime} from '../meta/customerRuntime.js';
 import {
   createDurableConversationReader,
   createDurableAttachmentContentReader,
@@ -328,6 +329,8 @@ export function createPersistentWhatsAppWorker(
         if (response) return response;
       }
 
+      const customerRuntime=createCustomerRuntime({conversations:env.CONVERSATIONS,registry,resource:resource??'https://unconfigured.invalid',secret:env.CONVERSATION_REF_SECRET,verifyToken:runtimeTokenVerifier,messaging:runtimeMessaging});
+      const customerRuntimeResponse=await customerRuntime.fetch(request);if(customerRuntimeResponse)return customerRuntimeResponse;
       const webhookResponse = await handleMetaWhatsAppWebhook(request, env, async (payload) => {
         // account_update can use a partner portfolio as entry.id. Only message
         // entries participate in conversation routing, even in mixed batches.
@@ -338,6 +341,7 @@ export function createPersistentWhatsAppWorker(
           tenantId,
           conversationRefSecret: env.CONVERSATION_REF_SECRET,
           writer,
+          afterInbound:customerRuntime.inbound,
           ...(attachmentCapture ? { captureAttachment: attachmentCapture } : {})
         } : null;
       }, payload => persistMetaAccountUpdates(payload, env.META_APP_ID ?? "", update => registry.recordAccountUpdate(update)));

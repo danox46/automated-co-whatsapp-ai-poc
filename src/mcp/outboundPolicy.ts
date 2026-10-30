@@ -93,6 +93,7 @@ export type WhatsAppMessagingCapability = {
     idempotencyKey: string;
     notAfter: string;
     expectedPolicyRevision: string;
+    offlineRuntime?:{generation:string;revision:number;inboundAt:string};
   }): Promise<WhatsAppProviderDispatchResult>;
   dispatchTemplateWithPolicy(input: {
     principal: WhatsAppMcpPrincipal;
@@ -285,7 +286,7 @@ async function resolveForDispatch(
 export async function dispatchFreeFormReply(
   capability: WhatsAppMessagingCapability,
   principal: WhatsAppMcpPrincipal,
-  input: { conversationRef: string; text: string; idempotencyKey: string }
+  input: { conversationRef: string; text: string; idempotencyKey: string;offlineRuntime?:{generation:string;revision:number;inboundAt:string} }
 ): Promise<WhatsAppOutboundResult> {
   const firstResolution = await resolveForDispatch(capability, principal, input.conversationRef);
   if ("allowed" in firstResolution) return { ok: false, error: firstResolution };
@@ -321,7 +322,8 @@ export async function dispatchFreeFormReply(
       text: input.text,
       idempotencyKey: input.idempotencyKey,
       notAfter,
-      expectedPolicyRevision: finalResolution.policyRevision
+      expectedPolicyRevision: finalResolution.policyRevision,
+      ...(input.offlineRuntime?{offlineRuntime:input.offlineRuntime}:{})
     });
   return "allowed" in providerResult
     ? { ok: false, error: providerResult }
