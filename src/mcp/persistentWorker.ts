@@ -1,7 +1,9 @@
 import { persistMetaAccountUpdates } from "../meta/accountUpdates.js";
 import {createCustomerRuntime} from '../meta/customerRuntime.js';
+import {createMorningInformationContext} from '../meta/morningInformationContext.js';
 import {
   createDurableConversationReader,
+  createDurableConversationEnforcementReader,
   createDurableAttachmentContentReader,
   createDurableAttachmentContentStore,
   createDurableConversationRetentionController,
@@ -257,7 +259,18 @@ export function createPersistentWhatsAppWorker(
           const installation = await registry.getInstallation(principal.tenantId);
           return installation?.status === "connected" ? principal : null;
         };
+        if(pathname==='/native/morning-context'){
+          const morningIssuer=safePublicOrigin(env.MORNING_ISSUER);
+          if(!morningIssuer)return Response.json({ok:false,code:'CONTEXT_NOT_CONFIGURED'},{status:503,headers:noStoreHeaders()});
+          const enforcement=createDurableConversationEnforcementReader(env.CONVERSATIONS);
+          return (await createMorningInformationContext({resource,morningIssuer,signingKey,verifyToken:runtimeTokenVerifier,
+            installation:tenantId=>registry.getInstallation(tenantId),
+            enforcement:(tenantId,conversationRef)=>enforcement.getConversationEnforcementState(tenantId,conversationRef)
+          }).fetch(request))!;
+        }
       }
+
+      if(pathname==='/native/morning-context')return Response.json({ok:false,code:'CONTEXT_NOT_CONFIGURED'},{status:503,headers:noStoreHeaders()});
 
       if (pathname.startsWith("/pilot/whatsapp/") || pathname.startsWith("/admin/pilot/")) {
         if (!pilotConfigured) {
